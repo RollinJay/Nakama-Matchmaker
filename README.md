@@ -3,7 +3,7 @@
 Nakama Matchmaker is a launcher that finds online opponents through a [Nakama](https://heroiclabs.com/nakama/) server and starts the game. It serves three engines:
 
 - **mGBA** (Game Boy Advance), through the mGBA fork at [RollinJay/mgba](https://github.com/RollinJay/mgba) with its netplay changes;
-- **melonDS** (Nintendo DS), through the melonDS fork at [RollinJay/melonDS-test](https://github.com/RollinJay/melonDS-test) with its netplay changes (in development);
+- **melonDS** (Nintendo DS), through the melonDS fork at [RollinJay/melonDS-test](https://github.com/RollinJay/melonDS-test) with its netplay changes;
 - **IKEMEN GO**, through its Nakama fork at [RollinJay/IkemenGo-Nakama](https://github.com/RollinJay/IkemenGo-Nakama).
 
 Its window is laid out like Fightcade's: the games on the left, the chosen game's chat room in the middle, the players in that room on the right, and buttons that find a match or start the game offline.
@@ -17,7 +17,7 @@ The repository also holds **netplay-online**, the library that the launcher and 
 1. Each player signs in to the Nakama server with an account tied to the computer (a random device id kept in the settings) and opens a game. Opening a game joins its chat room.
 2. **Find a match** asks the emulator for the game's *identity*: a hash of the emulator build, the netplay profile, and every ROM and save the profile names. Two players can only play each other when their identities are equal, so the identity is what the matchmaker pairs on, and it also names the room.
 3. When the matchmaker has enough players, the launcher writes the match to a private file and starts the emulator with the file's path in the `NETPLAY_CONNECT` environment variable ([docs/launch.md](docs/launch.md)).
-4. The emulator joins the match with the launcher's session, connects to the other players directly over UDP, and plays with rollback ([GekkoNet](https://github.com/HeatXD/GekkoNet)). Only the players' inputs travel between computers; every computer runs every console. The launcher stays in the room, and becomes ready for the next match when the emulator exits.
+4. The emulator joins the match with the launcher's session, connects to the other players directly over UDP, and plays the game with [GekkoNet](https://github.com/HeatXD/GekkoNet): with rollback in mGBA, in lockstep in melonDS. Only the players' inputs travel between computers; every computer runs every console. The launcher stays in the room, and becomes ready for the next match when the emulator exits.
 
 IKEMEN GO makes its own matches. For an IKEMEN GO game, the launcher starts IKEMEN GO with a server profile that names the launcher's server and account (`-nakama-config`, `-nakama-server`), and IKEMEN GO's online menus (quick match, lobbies) do the rest.
 
@@ -26,10 +26,10 @@ IKEMEN GO makes its own matches. For an IKEMEN GO game, the launcher starts IKEM
 | Kind | Program | Where matches are made | Players |
 |---|---|---|---|
 | `mgba` | mGBA fork built with `USE_NETPLAY` | the launcher | 2 to 4, as the profile's link needs |
-| `melonds` | melonDS fork with netplay | the launcher | 2 (in development) |
+| `melonds` | melonDS fork built with `BUILD_NETPLAY` | the launcher | as the profile says (tested with 2) |
 | `ikemen` | IKEMEN GO Nakama fork | IKEMEN GO's online menus | as in IKEMEN GO |
 
-An mGBA or melonDS game is a *netplay profile*: an INI file of the emulator fork that names the ROMs, how the consoles are linked, and which console each player's keys go to. The mGBA fork's `doc/netplay.md` describes profiles.
+An mGBA or melonDS game is a *netplay profile*: an INI file of the emulator fork that names the ROMs, how the consoles are linked, and which console each player's keys go to. The mGBA fork's `doc/netplay.md` and the melonDS fork's `NETPLAY.md` describe their profiles. A profile that names its ROMs through environment variables (`${VAR}`), as the forks' examples do, needs those variables in the launcher's environment, which the emulator inherits; a profile of one's own can name the files' paths instead.
 
 ## Building
 
@@ -63,7 +63,7 @@ The settings (`settings.ini`) and the game list (`games.json`) are kept in the c
 | `command` | all | Program and arguments to run instead of the configured program |
 | `identity_command` | `mgba`, `melonds` | Program and arguments that print the identity; `{profile}` stands for the profile's path |
 
-Without `identity_command`, the launcher runs `<emulator> --netplay-identity <profile>`. [docs/games.example.json](docs/games.example.json) shows an mGBA game, IKEMEN GO, and a headless test entry that uses `command` and `identity_command`.
+Without `identity_command`, the launcher runs `<emulator> --netplay-identity <profile>`. [docs/games.example.json](docs/games.example.json) shows an mGBA game, a melonDS game, IKEMEN GO, and a headless test entry that uses `command` and `identity_command`.
 
 Player names are unique on the server. When another account already has the name, the account gets the name followed by a tag made from the device id, such as `Ryu#3fa0`; the tag stays the same at every sign-in.
 
@@ -96,24 +96,25 @@ build/netplay-online-test --device test-device-one --name one
 build/netplay-online-test --device test-device-two --name two
 ```
 
-Two launchers with `--auto` and separate `--config` folders test the whole path, including the start of the emulator. Running an emulator fork's test tool as the game's `command` makes the run headless; the mGBA fork's `mgba-netplay-online-test` prints a checksum of every console's memory after a fixed number of frames, which must be equal for every player.
+Two launchers with `--auto` and separate `--config` folders test the whole path, including the start of the emulator. Running an emulator fork's headless player as the game's `command` makes the run headless: the mGBA fork's `mgba-netplay-online-test` and the melonDS fork's `melonds-netplay-online-test` play a fixed number of frames with scripted keys and print a checksum of every console's memory, which must be equal for every player (`--trace` writes one per frame).
 
 ## Status
 
 Tested on Ubuntu 24.04 with Qt 5.15 against Nakama 3.41.0, with every player on one computer:
 
-- two players (mGBA fork, two linked GBAs) and three players (three linked GBAs): matched, launched, connected and played to identical checksums;
+- mGBA fork: two players (two linked GBAs) and three players (three linked GBAs) matched, launched, connected and played to identical checksums, headless; two `mgba-qt` windows played a match started by two launchers;
+- melonDS fork: two players (two DS consoles over local wireless) matched, launched, connected and played to identical checksums, headless; two melonDS windows played a match started by two launchers;
 - the launcher's window: sign-in, rooms, chat, matchmaking, starting the game and returning when it exits.
 
-Not yet tested: players on different networks behind real NATs, Windows and macOS builds, the melonDS fork (its netplay is in development), and starting IKEMEN GO from the launcher.
+Not yet tested: players on different networks behind real NATs, Windows and macOS builds, and starting IKEMEN GO from the launcher.
 
 ## Limitations
 
-- The direct connections use STUN only. Two players who are both behind symmetric NATs cannot connect; a relay (TURN, or relaying through the Nakama match) is not implemented.
+- The direct connections use STUN only. A player behind a symmetric NAT cannot connect to one behind a symmetric or port-restricted NAT; a relay (TURN, or relaying through the Nakama match) is not implemented.
 - Every player in a match needs every other player's inputs, so the match ends when any player leaves.
 - The account belongs to the computer: there is no sign-in with email or another provider, and moving to another computer means a new account.
 - The launcher does not make IKEMEN GO's matches; IKEMEN GO has no option to join a match found elsewhere.
 
 ## License
 
-MIT (see [LICENSE](LICENSE)). netplay-online is MIT so that both emulator forks can include it: mGBA is under the MPL 2.0 and melonDS under the GPL 3.0.
+MIT (see [LICENSE](LICENSE); `netplay-online/LICENSE` holds the same text for the forks' copies). netplay-online is MIT so that both emulator forks can include it: mGBA is under the MPL 2.0 and melonDS under the GPL 3.0.
