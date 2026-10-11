@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "games": [
+    {
+      "id": "linkstress-2p",
+      "title": "Link stress (2 GBAs)",
+      "kind": "mgba",
+      "profile": "/home/me/mgba/tools/netplay/profiles/linkstress-2p.ini",
+      "players": 2
+    },
+    {
+      "id": "ikemen",
+      "title": "IKEMEN GO",
+      "kind": "ikemen",
+      "game": "ikemen",
+      "build": "nightly",
+      "workdir": "/home/me/ikemen"
+    },
+    {
+      "id": "linkstress-headless",
+      "title": "Link stress, headless test",
+      "kind": "mgba",
+      "profile": "/home/me/mgba/tools/netplay/profiles/linkstress-2p.ini",
+      "players": 2,
+      "command": [
+        "/home/me/mgba/build/mgba-netplay-online-test",
+        "--frames",
+        "600"
+      ],
+      "identity_command": [
+        "/home/me/mgba/build/mgba-netplay-test",
+        "-m",
+        "identity",
+        "-p",
+        "{profile}"
+      ]
+    }
+  ]
+}
