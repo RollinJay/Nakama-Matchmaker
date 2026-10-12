@@ -17,8 +17,10 @@ melonds=$2/src/net/rollback/server/melonds_channel.lua
 rm -f "$here"/server/modules/ikemen/*.lua
 cp "$ikemen"/*.lua "$here/server/modules/ikemen/"
 cp "$1/LICENCE.txt" "$here/server/modules/ikemen/LICENSE"
+# the channel module is MIT, like this repository; the rest of melonDS is GPL
+grep -q 'SPDX-License-Identifier: MIT' "$melonds" || { echo "$melonds is not marked MIT" >&2; exit 1; }
 cp "$melonds" "$here/server/modules/melonds/"
-cp "$2/LICENSE" "$here/server/modules/melonds/LICENSE"
+cp "$here/LICENSE" "$here/server/modules/melonds/LICENSE"
 
 echo "IKEMEN GO modules from $(git -C "$1" rev-parse --short HEAD 2>/dev/null || echo "$1")"
 echo "melonDS module from $(git -C "$2" rev-parse --short HEAD 2>/dev/null || echo "$2")"

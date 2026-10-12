@@ -1,6 +1,6 @@
 # Handing a match to an emulator
 
-When the matchmaker pairs players, the launcher does not play the match itself: it writes the match to a file and starts the emulator, which joins the match and plays it. This document describes that file (the *connection file*, version 1) and what an emulator does with it. netplay-online's `ConnectInfo` reads and writes it.
+When the matchmaker pairs players for an mGBA game, the launcher does not play the match itself: it writes the match to a file and starts the emulator, which joins the match and plays it. (The rollback melonDS fork and IKEMEN GO make their own matches and get a server profile instead; see the README's [Games](../README.md#games).) This document describes that file (the *connection file*, version 1) and what an emulator does with it. netplay-online's `ConnectInfo` reads and writes it.
 
 ## Passing the file
 
@@ -38,7 +38,7 @@ The file is a JSON object:
 | `match` | The match the matchmaker made: either an authoritative match's `match_id`, or the matchmaker `token` of a relayed match (one of the two is not empty). |
 | `players` | Every player of the match, in player order: player 1 first. `user_id` is the Nakama user id, `name` the username. |
 | `self` | The local player's index in `players` (from 0). |
-| `game.kind` | `mgba` or `melonds`. |
+| `game.kind` | `mgba`; `melonds` was used by an earlier netplay version of the melonDS fork, which the launcher no longer starts. |
 | `game.profile` | The netplay profile that the launcher matched on, as a path on this computer. |
 | `game.identity` | The profile's identity as the launcher computed it (40 hexadecimal digits). The emulator computes it again and refuses the match when they differ, since the players could not stay in sync. |
 | `stun` | STUN servers (`host:port`) for finding the public address. May be empty. |

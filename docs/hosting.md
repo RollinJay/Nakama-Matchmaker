@@ -25,7 +25,7 @@ A server is set up for one or more kinds of game. The kinds decide which server 
 |---|---|---|---|
 | IKEMEN GO (`ikemen`) | the IKEMEN GO Nakama fork's online menus | IKEMEN GO's modules | quick and ranked matchmaking, lobbies, ratings, online names |
 | GBA (`gba`, or `mgba`) | the mGBA fork's netplay window, or Nakama Matchmaker | IKEMEN GO's modules | two-player matches run as IKEMEN GO's sessions; three and four players use matches that Nakama relays |
-| DS (`ds`, or `melonds`) | the melonDS fork's online window | melonDS's channel module | the game channels: who is there, chat, challenges and quick match |
+| DS (`ds`, or `melonds`) | the melonDS fork's online window, opened by itself or by Nakama Matchmaker's **Play online** | melonDS's channel module | the game channels: who is there, chat, challenges and quick match |
 
 Every server also gets Nakama Matchmaker's community module, which tells clients the community's name and message, and stops players from writing into the records that the server modules keep (without it, a player could give themselves any IKEMEN GO rating). [server/modules/README.md](../server/modules/README.md) lists the modules and where they come from.
 
@@ -181,8 +181,8 @@ Tested on Ubuntu 24.04 with Nakama 3.41.0 and PostgreSQL 16, with every program 
 - servers for each kind, and for several kinds, started from the window and from both command-line programs, several at once; each server answered with its own community name and kinds, and offered only its kinds' RPCs;
 - on a GBA and IKEMEN GO server: two and three `netplay-online-test` players matched, connected and chatted; two launchers with `--auto` matched and played an mGBA fork match (`mgba-netplay-online-test`) to identical per-frame checksums;
 - on an IKEMEN GO server: the IKEMEN GO fork's 34 live Nakama tests (its client code against the server: sign-in and names, quick and ranked matchmaking with ratings, lobbies and tournaments, sessions and direct connections, watching matches) passed, with the Nakama settings those tests ask for given through `--nakama-arg`;
-- on a DS server: clients speaking the melonDS fork's channel protocol joined a channel, were paired by quick match, and had their connection signals relayed to their partner only;
+- on a DS server: clients speaking the melonDS fork's channel protocol joined a channel, were paired by quick match, and had their connection signals relayed to their partner only; two launchers with `--auto` started two melonDS fork windows, which were paired in the game's channel and played with rollback (60 desync checks passed) until one was closed;
 - stopping with Ctrl+C, SIGTERM and the window; recovering a Nakama and a database left running; a stop while the database is being created; refusing folders that are not the server's;
 - the database role's rights, and the refusal of players' writes to the server's records.
 
-Not tested: Windows and macOS (their code paths are written but have not run), the IKEMEN GO game and the melonDS fork's online window themselves against a community server, TLS, and players on different networks.
+Not tested: Windows and macOS (their code paths are written but have not run), the IKEMEN GO game itself against a community server, a DS game's own wireless play (the DS test used a small homebrew ROM), TLS, and players on different networks.

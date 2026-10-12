@@ -237,7 +237,7 @@ void LauncherCore::findMatch(const QString& gameId) {
 		return;
 	}
 	if (!game->matchesInLauncher()) {
-		play(gameId);
+		play(gameId, true);
 		return;
 	}
 	QString error;
@@ -363,7 +363,7 @@ bool LauncherCore::launch(const Game& game, const QProcessEnvironment& env, QStr
 	return true;
 }
 
-void LauncherCore::play(const QString& gameId) {
+void LauncherCore::play(const QString& gameId, bool quickMatch) {
 	const Game* game = m_catalog->find(gameId);
 	if (!game) {
 		return;
@@ -371,9 +371,11 @@ void LauncherCore::play(const QString& gameId) {
 	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
 	env.remove(QStringLiteral("NETPLAY_CONNECT"));
 	Game started = *game;
-	if (game->kind == QLatin1String("ikemen")) {
-		// IKEMEN GO signs in with the launcher's server and account, and its own online
-		// menus (quick match, lobbies) make the matches
+	bool melonds = game->kind == QLatin1String("melonds");
+	if (game->kind == QLatin1String("ikemen") || (melonds && quickMatch)) {
+		// IKEMEN GO and melonDS sign in with the launcher's server and account, and their
+		// own online menus make the matches: IKEMEN GO's quick match and lobbies, melonDS's
+		// game channel (the server's melonds module), where it asks for a quick match
 		m_handoff.reset(new QTemporaryDir);
 		QString path = m_handoff->filePath(QStringLiteral("servers.json"));
 		NetplayOnline::ServerConfig server = m_settings->server();
@@ -398,16 +400,25 @@ void LauncherCore::play(const QString& gameId) {
 		};
 		QFile file(path);
 		if (!file.open(QIODevice::WriteOnly)) {
-			emit status(tr("Cannot write IKEMEN GO's server profile: %1").arg(file.errorString()));
+			emit status(tr("Cannot write the game's server profile: %1").arg(file.errorString()));
 			return;
 		}
 		file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
 		file.write(QJsonDocument(root).toJson());
 		file.close();
-		started.args = QStringList { QStringLiteral("-nakama-config"), path, QStringLiteral("-nakama-server"), QStringLiteral("launcher") } + game->args;
-		if (started.workdir.isEmpty()) {
+		if (melonds) {
+			// melonDS quits when the online session ends, and the launcher is back
+			started.args = QStringList { QStringLiteral("--netplay-config"), path, QStringLiteral("--netplay-online"),
+			                             QStringLiteral("--netplay-quick"), QStringLiteral("--netplay-exit") } + game->args;
+		} else {
+			started.args = QStringList { QStringLiteral("-nakama-config"), path, QStringLiteral("-nakama-server"), QStringLiteral("launcher") } + game->args;
+		}
+		if (game->kind == QLatin1String("ikemen") && started.workdir.isEmpty()) {
 			started.workdir = QFileInfo(m_settings->ikemenPath()).absolutePath();
 		}
+	}
+	if (melonds && !game->profile.isEmpty()) {
+		started.args << game->profile;   // the ROM
 	}
 	QString error;
 	if (!launch(started, env, &error)) {

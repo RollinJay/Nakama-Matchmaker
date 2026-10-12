@@ -26,7 +26,8 @@ Each game has a chat room: a Nakama room channel (`channel_join`, type 1, persis
 
 | Game kind | Room name |
 |---|---|
-| `mgba`, `melonds` | the kind, `.`, and the first 24 digits of the profile's identity, e.g. `mgba.12ea7bc41c53d6468b943e26` |
+| `mgba` | the kind, `.`, and the first 24 digits of the profile's identity, e.g. `mgba.12ea7bc41c53d6468b943e26` |
+| `melonds` | `game.<id>`: DS players meet in melonDS's own game channel, not in this room |
 | `ikemen` | `ikemen.<game>.<build>` |
 
 Room names are cut to 64 characters, Nakama's limit. A launcher that cannot compute an identity uses `game.<id>` until it can. Chat messages are `channel_message_send` with the content `{"text": "..."}`, at most 200 characters.

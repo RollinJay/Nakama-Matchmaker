@@ -53,7 +53,7 @@ public:
 	void sendChat(const QString& text);
 	void findMatch(const QString& gameId);
 	void cancelMatch();
-	void play(const QString& gameId);   // without a match: offline, or IKEMEN GO's own online menus
+	void play(const QString& gameId, bool quickMatch = false);   // without a launcher match: offline, or the game's own online menus (quickMatch: melonDS online)
 
 signals:
 	void stateChanged(LauncherCore::State);

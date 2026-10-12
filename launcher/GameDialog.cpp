@@ -6,6 +6,7 @@
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -36,14 +37,17 @@ GameDialog::GameDialog(const Game& game, QWidget* parent)
 	m_profile = new QLineEdit(game.profile);
 	QPushButton* browse = new QPushButton(tr("Browse..."));
 	connect(browse, &QPushButton::clicked, this, [this]() {
-		QString path = QFileDialog::getOpenFileName(this, tr("Select a netplay profile"), m_profile->text(), tr("Netplay profiles (*.ini)"));
+		bool ds = m_kind->currentData().toString() == QLatin1String("melonds");
+		QString path = ds ? QFileDialog::getOpenFileName(this, tr("Select a DS ROM"), m_profile->text(), tr("DS ROMs (*.nds);;All files (*)"))
+		                  : QFileDialog::getOpenFileName(this, tr("Select a netplay profile"), m_profile->text(), tr("Netplay profiles (*.ini)"));
 		if (!path.isEmpty()) {
 			m_profile->setText(path);
 		}
 	});
 	profileLayout->addWidget(m_profile, 1);
 	profileLayout->addWidget(browse);
-	form->addRow(tr("Netplay profile"), profileRow);
+	m_profileLabel = new QLabel(tr("Netplay profile"));
+	form->addRow(m_profileLabel, profileRow);
 	m_players = new QSpinBox;
 	m_players->setRange(2, 4);
 	m_players->setValue(game.players);
@@ -62,9 +66,12 @@ GameDialog::GameDialog(const Game& game, QWidget* parent)
 }
 
 void GameDialog::updateKind() {
-	bool emulator = m_kind->currentData().toString() != QLatin1String("ikemen");
+	QString kind = m_kind->currentData().toString();
+	bool emulator = kind != QLatin1String("ikemen");
 	m_profile->parentWidget()->setEnabled(emulator);
-	m_players->setEnabled(emulator);
+	// melonDS's quick match pairs two players in the game's channel
+	m_profileLabel->setText(kind == QLatin1String("melonds") ? tr("ROM") : tr("Netplay profile"));
+	m_players->setEnabled(kind == QLatin1String("mgba"));
 	m_ikemenGame->setEnabled(!emulator);
 	m_ikemenBuild->setEnabled(!emulator);
 }

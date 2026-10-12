@@ -310,6 +310,10 @@ void LauncherWindow::updateGameInfo() {
 	if (game->matchesInLauncher()) {
 		info = tr("%1 · %n players · profile %2", nullptr, game->players).arg(game->kindLabel(), QFileInfo(game->profile).fileName());
 		m_gameInfo->setToolTip(game->profile);
+	} else if (game->kind == QLatin1String("melonds")) {
+		m_gameInfo->setToolTip(game->profile);
+		info = tr("DS (melonDS) · ROM %1 · Play online opens melonDS in the game's channel and asks for a quick match, with this account and server")
+		       .arg(QFileInfo(game->profile).fileName());
 	} else {
 		m_gameInfo->setToolTip(QString());
 		info = tr("IKEMEN GO · matches are made in IKEMEN GO's online menus, with this account and server");

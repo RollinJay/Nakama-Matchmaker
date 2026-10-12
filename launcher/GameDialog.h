@@ -6,6 +6,7 @@
 #include <QDialog>
 
 class QComboBox;
+class QLabel;
 class QLineEdit;
 class QSpinBox;
 
@@ -24,6 +25,7 @@ private:
 	QLineEdit* m_title;
 	QComboBox* m_kind;
 	QLineEdit* m_profile;
+	QLabel* m_profileLabel;
 	QSpinBox* m_players;
 	QLineEdit* m_ikemenGame;
 	QLineEdit* m_ikemenBuild;
