@@ -2,7 +2,7 @@
 
 This document describes what the launcher and the emulators exchange with the Nakama server and with each other. netplay-online implements all of it: `NakamaClient` (server), `MatchSession` (one match), `PeerLinks` (direct connections) and `GekkoAdapter` (game packets).
 
-The server side is plain Nakama plus the IKEMEN GO fork's server modules ([server.md](server.md)); nothing here needs server code of its own.
+The server side is plain Nakama plus the IKEMEN GO fork's server modules ([server.md](server.md)); nothing here needs server code of its own, except the optional `community_info` of [Community servers](#community-servers).
 
 ## Accounts
 
@@ -15,6 +15,10 @@ The username is what the other players see. Usernames are unique on a Nakama ser
 3. no name, for which the server makes one up.
 
 For a new account, the request's `username` parameter carries the name. An existing account whose name is neither the chosen one nor the tagged one is renamed with `PUT /v2/account`, then signed in again so that the session token carries the new name. Nakama answers a name that another account has with 409 at sign-in and with 400 ("Username is already in use") when renaming; both move on to the next name. Whitespace in a name becomes `_`.
+
+## Community servers
+
+A server that Nakama Matchmaker runs ([hosting.md](hosting.md)) answers the RPC `community_info` (`{}` → `{"version": 1, "title": "...", "message": "...", "kinds": ["ikemen", "mgba", "melonds"]}`): the community's name, its message, and the kinds of game it is set up for. The launcher calls it after opening the realtime socket; when it answers, the status line names the community, the message appears in the chat, and a game of another kind is marked as such. Other servers have no such RPC, and the launcher goes on without it.
 
 ## Rooms
 
