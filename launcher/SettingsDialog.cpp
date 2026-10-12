@@ -27,6 +27,7 @@ SettingsDialog::SettingsDialog(Settings* settings, QWidget* parent)
 	m_host = new QLineEdit(server.host);
 	m_port = new QSpinBox;
 	m_port->setRange(1, 65535);
+	m_port->setButtonSymbols(QAbstractSpinBox::NoButtons);
 	m_port->setValue(server.port);
 	m_ssl = new QCheckBox(tr("TLS"));
 	m_ssl->setChecked(server.ssl);

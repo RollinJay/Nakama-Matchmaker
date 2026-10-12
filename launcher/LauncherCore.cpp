@@ -44,6 +44,16 @@ void LauncherCore::setState(State state) {
 	}
 }
 
+QString LauncherCore::Community::kindsLabel() const {
+	QStringList labels;
+	for (const QString& kind : kinds) {
+		Game g;
+		g.kind = kind;
+		labels.append(g.kindLabel());
+	}
+	return labels.join(QStringLiteral(", "));
+}
+
 QString LauncherCore::userId() const {
 	return m_client ? m_client->session().userId : QString();
 }
@@ -85,6 +95,23 @@ void LauncherCore::signIn() {
 	});
 	connect(client, &NakamaClient::socketOpened, this, [this, client]() {
 		emit status(tr("Online as %1.").arg(client->session().username));
+		// a community server says which community it is for; other servers have no such RPC
+		client->rpc(QStringLiteral("community_info"), QJsonObject(), [this, client](bool ok, const QByteArray& reply, const QString&) {
+			if (!ok || client != m_client.get()) {
+				return;
+			}
+			QJsonObject o = QJsonDocument::fromJson(reply).object();
+			m_community.title = o.value(QStringLiteral("title")).toString().left(64);
+			m_community.message = o.value(QStringLiteral("message")).toString().left(500);
+			m_community.kinds.clear();
+			for (const QJsonValue& v : o.value(QStringLiteral("kinds")).toArray()) {
+				m_community.kinds.append(v.toString());
+			}
+			if (!m_community.title.isEmpty() && m_state != State::SignedOut) {
+				emit status(tr("Online as %1 on %2.").arg(client->session().username, m_community.title));
+			}
+			emit communityChanged();
+		});
 		m_ping.start();
 		client->ping();
 		if (!m_roomGame.isEmpty()) {
@@ -153,6 +180,10 @@ void LauncherCore::signOut() {
 	m_members.clear();
 	m_roomChannel.clear();
 	emit membersChanged();
+	if (!m_community.title.isEmpty() || !m_community.kinds.isEmpty()) {
+		m_community = Community();
+		emit communityChanged();
+	}
 	if (m_state != State::Playing) {
 		setState(State::SignedOut);
 	}

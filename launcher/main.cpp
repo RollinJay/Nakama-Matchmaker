@@ -4,6 +4,8 @@
 #include "GameCatalog.h"
 #include "LauncherCore.h"
 #include "LauncherWindow.h"
+#include "ServerCli.h"
+#include "ServerManager.h"
 #include "Settings.h"
 
 #include <QApplication>
@@ -14,7 +16,34 @@
 
 #include <cstdio>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 int main(int argc, char** argv) {
+	QString serverConfig;
+	QStringList serverArgs;
+	if (isServerCommand(argc, argv, &serverConfig, &serverArgs)) {
+		// the community servers' commands need no window, nor a display (docs/hosting.md)
+#ifdef Q_OS_WIN
+		// a program with a window has no console of its own on Windows: use the one it was
+		// started from (nakama-matchmaker-server is the console program for this)
+		if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+			freopen("CONOUT$", "w", stdout);
+			freopen("CONOUT$", "w", stderr);
+		}
+#endif
+		QCoreApplication app(argc, argv);
+		QCoreApplication::setApplicationName(QStringLiteral("nakama-matchmaker"));
+		QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+		return runServerCommand(serverConfig, serverArgs, QStringLiteral("nakama-matchmaker server"));
+	}
+
+	// the arguments as given: on X11, QApplication takes -name/--name (an X11 option) for itself
+	QStringList arguments;
+	for (int i = 0; i < argc; ++i) {
+		arguments.append(QString::fromLocal8Bit(argv[i]));
+	}
 	QApplication app(argc, argv);
 	// the configuration folder: ~/.config/nakama-matchmaker, %LOCALAPPDATA%\nakama-matchmaker,
 	// ~/Library/Preferences/nakama-matchmaker
@@ -32,7 +61,8 @@ int main(int argc, char** argv) {
 	parser.addOption({ "host", "Nakama server host (saved)", "host" });
 	parser.addOption({ "port", "Nakama server port (saved)", "port" });
 	parser.addOption({ "auto", "without a window: sign in, find a match for this game, play it and exit", "game" });
-	parser.process(app);
+	parser.addPositionalArgument(QStringLiteral("server"), QStringLiteral("'server <command>' runs community servers without a window; 'server --help' lists the commands"), QStringLiteral("[server <command>]"));
+	parser.process(arguments);
 
 	QString folder = parser.value("config");
 	if (folder.isEmpty()) {
@@ -97,7 +127,11 @@ int main(int argc, char** argv) {
 		return exitCode;
 	}
 
-	LauncherWindow window(&settings, &catalog, &core);
+	ServerManager servers(folder);
+	if (!servers.load(&error)) {
+		fprintf(stderr, "%s\n", qPrintable(error));
+	}
+	LauncherWindow window(&settings, &catalog, &core, &servers);
 	window.show();
 	return app.exec();
 }

@@ -3,6 +3,8 @@
 
 #include "GameCatalog.h"
 #include "GameDialog.h"
+#include "ServerManager.h"
+#include "ServersWindow.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
 
@@ -22,7 +24,7 @@
 namespace {
 
 const char* const STYLE =
-	"QMainWindow, QWidget#central { background: #1b1726; color: #e8e4f0; }"
+	"QMainWindow, QWidget#central, QWidget#servers, QDialog { background: #1b1726; color: #e8e4f0; }"
 	"QWidget#topbar, QWidget#statusbar { background: #15111f; }"
 	"QWidget#sidebar, QWidget#members { background: #211a2e; }"
 	"QLabel { color: #e8e4f0; }"
@@ -33,7 +35,24 @@ const char* const STYLE =
 	"QListWidget { background: transparent; color: #e8e4f0; border: none; }"
 	"QListWidget::item { padding: 6px 4px; }"
 	"QListWidget::item:selected { background: #3a3150; color: #ffffff; }"
-	"QLineEdit, QTextEdit { background: #15111f; color: #e8e4f0; border: 1px solid #3a3150; padding: 4px; }"
+	"QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox { background: #15111f; color: #e8e4f0; border: 1px solid #3a3150; padding: 4px; }"
+	"QLineEdit:disabled, QSpinBox:disabled { color: #6c6480; }"
+	"QCheckBox, QRadioButton { color: #e8e4f0; }"
+	"QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled { color: #6c6480; }"
+	"QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }"
+	"QTabWidget::pane { border: 1px solid #3a3150; }"
+	"QTabBar::tab { background: #211a2e; color: #9a92b0; padding: 6px 14px; }"
+	"QTabBar::tab:selected { background: #3a3150; color: #ffffff; }"
+	"QCheckBox::indicator, QRadioButton::indicator { width: 12px; height: 12px; border: 1px solid #6c6480; background: #15111f; }"
+	"QRadioButton::indicator { border-radius: 7px; }"
+	"QCheckBox::indicator:checked, QRadioButton::indicator:checked { background: #2ee6d6; border-color: #2ee6d6; }"
+	"QCheckBox::indicator:disabled, QRadioButton::indicator:disabled { border-color: #3a3150; }"
+	"QCheckBox::indicator:checked:disabled, QRadioButton::indicator:checked:disabled { background: #1d3533; }"
+	"QScrollBar:vertical { background: #15111f; width: 10px; margin: 0; }"
+	"QScrollBar:horizontal { background: #15111f; height: 10px; margin: 0; }"
+	"QScrollBar::handle { background: #3a3150; min-height: 24px; min-width: 24px; }"
+	"QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }"
+	"QScrollBar::add-page, QScrollBar::sub-page { background: none; }"
 	"QPushButton { background: #3a3150; color: #e8e4f0; border: 1px solid #4c4266; padding: 6px 14px; }"
 	"QPushButton:hover { background: #4c4266; }"
 	"QPushButton:disabled { color: #6c6480; border-color: #2c2540; }"
@@ -42,11 +61,12 @@ const char* const STYLE =
 
 }
 
-LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, LauncherCore* core, QWidget* parent)
+LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, LauncherCore* core, ServerManager* servers, QWidget* parent)
 	: QMainWindow(parent)
 	, m_settings(settings)
 	, m_catalog(catalog)
-	, m_core(core) {
+	, m_core(core)
+	, m_servers(servers) {
 	setWindowTitle(tr("Nakama Matchmaker"));
 	setStyleSheet(QString::fromLatin1(STYLE));
 	resize(1100, 680);
@@ -83,6 +103,10 @@ LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, Launche
 		}
 	});
 	topLayout->addWidget(m_signIn);
+	m_serversButton = new QPushButton(tr("Servers"));
+	m_serversButton->setToolTip(tr("Run Nakama servers for IKEMEN GO, GBA and DS communities"));
+	connect(m_serversButton, &QPushButton::clicked, this, &LauncherWindow::openServers);
+	topLayout->addWidget(m_serversButton);
 	QPushButton* settingsButton = new QPushButton(tr("Settings"));
 	connect(settingsButton, &QPushButton::clicked, this, &LauncherWindow::openSettings);
 	topLayout->addWidget(settingsButton);
@@ -123,6 +147,7 @@ LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, Launche
 	channelLayout->addWidget(m_gameTitle);
 	m_gameInfo = new QLabel;
 	m_gameInfo->setObjectName("dim");
+	m_gameInfo->setTextFormat(Qt::PlainText);
 	m_gameInfo->setWordWrap(true);
 	channelLayout->addWidget(m_gameInfo);
 	QHBoxLayout* actions = new QHBoxLayout;
@@ -173,6 +198,7 @@ LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, Launche
 	bottomLayout->setContentsMargins(14, 6, 14, 6);
 	m_status = new QLabel;
 	m_status->setObjectName("dim");
+	m_status->setTextFormat(Qt::PlainText);
 	bottomLayout->addWidget(m_status, 1);
 	rows->addWidget(bottom);
 	setCentralWidget(central);
@@ -186,18 +212,55 @@ LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, Launche
 		m_members->addItems(names);
 		m_membersTitle->setText(tr("IN THE ROOM (%1)").arg(names.size()));
 	});
+	connect(m_servers, &ServerManager::stateChanged, this, &LauncherWindow::updateServers);
+	connect(m_core, &LauncherCore::communityChanged, this, [this]() {
+		updateGameInfo();
+		if (!m_core->community().message.isEmpty()) {
+			appendChat(m_core->community().title, m_core->community().message);
+		}
+	});
 	m_status->setText(tr("Not signed in."));
 	reloadGames();
 	updateState();
+	updateServers();
+}
+
+void LauncherWindow::openServers() {
+	if (!m_serversWindow) {
+		m_serversWindow = new ServersWindow(m_servers, m_settings, this);
+	}
+	m_serversWindow->show();
+	m_serversWindow->raise();
+	m_serversWindow->activateWindow();
+}
+
+void LauncherWindow::updateServers() {
+	int running = m_servers->active().size();
+	m_serversButton->setText(running ? tr("Servers (%1 running)").arg(running) : tr("Servers"));
 }
 
 void LauncherWindow::closeEvent(QCloseEvent* event) {
+	if (m_serversWindow && !m_serversWindow->settle()) {
+		event->ignore();
+		return;
+	}
+	// the servers are the launcher's child processes: closing the launcher stops them
+	QStringList running = m_servers->active();
+	if (!running.isEmpty() &&
+	    QMessageBox::question(this, tr("Quit"), tr("Servers are running (%1). Closing the launcher stops them.").arg(running.join(QStringLiteral(", "))),
+	                          QMessageBox::Close | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Close) {
+		event->ignore();
+		return;
+	}
 	// the game is the launcher's child process: closing the launcher ends it
 	if (m_core->state() == LauncherCore::State::Playing &&
 	    QMessageBox::question(this, tr("Quit"), tr("A game is running. Closing the launcher closes the game too."),
 	                          QMessageBox::Close | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Close) {
 		event->ignore();
 		return;
+	}
+	if (m_serversWindow) {
+		m_serversWindow->close();
 	}
 	event->accept();
 }
@@ -227,23 +290,35 @@ QString LauncherWindow::selectedGame() const {
 
 void LauncherWindow::selectGame() {
 	const Game* game = m_catalog->find(selectedGame());
+	updateGameInfo();
+	if (game) {
+		m_chat->clear();
+		m_core->enterRoom(game->id);
+	}
+	updateState();
+}
+
+void LauncherWindow::updateGameInfo() {
+	const Game* game = m_catalog->find(selectedGame());
 	if (!game) {
 		m_gameTitle->setText(tr("No game"));
 		m_gameInfo->setText(tr("Add a game: an mGBA or melonDS netplay profile, or IKEMEN GO."));
-		updateState();
 		return;
 	}
 	m_gameTitle->setText(game->title);
+	QString info;
 	if (game->matchesInLauncher()) {
-		m_gameInfo->setText(tr("%1 · %n players · profile %2", nullptr, game->players).arg(game->kindLabel(), QFileInfo(game->profile).fileName()));
+		info = tr("%1 · %n players · profile %2", nullptr, game->players).arg(game->kindLabel(), QFileInfo(game->profile).fileName());
 		m_gameInfo->setToolTip(game->profile);
 	} else {
 		m_gameInfo->setToolTip(QString());
-		m_gameInfo->setText(tr("IKEMEN GO · matches are made in IKEMEN GO's online menus, with this account and server"));
+		info = tr("IKEMEN GO · matches are made in IKEMEN GO's online menus, with this account and server");
 	}
-	m_chat->clear();
-	m_core->enterRoom(game->id);
-	updateState();
+	const LauncherCore::Community& community = m_core->community();
+	if (!community.kinds.isEmpty() && !community.kinds.contains(game->kind)) {
+		info += tr(" · this server's community plays other games (%1)").arg(community.kindsLabel());
+	}
+	m_gameInfo->setText(info);
 }
 
 void LauncherWindow::updateState() {
