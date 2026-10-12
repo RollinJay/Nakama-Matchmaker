@@ -21,16 +21,29 @@
 #endif
 
 int main(int argc, char** argv) {
+	// the arguments as given: on X11, QApplication takes -name/--name (an X11 option) for itself
+	QStringList arguments = commandLineArguments(argc, argv);
 	QString serverConfig;
 	QStringList serverArgs;
-	if (isServerCommand(argc, argv, &serverConfig, &serverArgs)) {
+	if (isServerCommand(arguments, &serverConfig, &serverArgs)) {
 		// the community servers' commands need no window, nor a display (docs/hosting.md)
 #ifdef Q_OS_WIN
 		// a program with a window has no console of its own on Windows: use the one it was
-		// started from (nakama-matchmaker-server is the console program for this)
-		if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-			freopen("CONOUT$", "w", stdout);
-			freopen("CONOUT$", "w", stderr);
+		// started from, for the output that is not redirected elsewhere
+		// (nakama-matchmaker-server is the console program for this)
+		auto unset = [](DWORD which) {
+			HANDLE h = GetStdHandle(which);
+			return h == nullptr || h == INVALID_HANDLE_VALUE || GetFileType(h) == FILE_TYPE_UNKNOWN;
+		};
+		bool out = unset(STD_OUTPUT_HANDLE);
+		bool err = unset(STD_ERROR_HANDLE);
+		if ((out || err) && AttachConsole(ATTACH_PARENT_PROCESS)) {
+			if (out) {
+				freopen("CONOUT$", "w", stdout);
+			}
+			if (err) {
+				freopen("CONOUT$", "w", stderr);
+			}
 		}
 #endif
 		QCoreApplication app(argc, argv);
@@ -39,11 +52,6 @@ int main(int argc, char** argv) {
 		return runServerCommand(serverConfig, serverArgs, QStringLiteral("nakama-matchmaker server"));
 	}
 
-	// the arguments as given: on X11, QApplication takes -name/--name (an X11 option) for itself
-	QStringList arguments;
-	for (int i = 0; i < argc; ++i) {
-		arguments.append(QString::fromLocal8Bit(argv[i]));
-	}
 	QApplication app(argc, argv);
 	// the configuration folder: ~/.config/nakama-matchmaker, %LOCALAPPDATA%\nakama-matchmaker,
 	// ~/Library/Preferences/nakama-matchmaker
@@ -62,15 +70,32 @@ int main(int argc, char** argv) {
 	parser.addOption({ "port", "Nakama server port (saved)", "port" });
 	parser.addOption({ "auto", "without a window: sign in, find a match for this game, play it and exit", "game" });
 	parser.addPositionalArgument(QStringLiteral("server"), QStringLiteral("'server <command>' runs community servers without a window; 'server --help' lists the commands"), QStringLiteral("[server <command>]"));
-	parser.process(arguments);
+	// Qt's own options (-platform, -style, ...) are gone from app's arguments, and on X11
+	// --name with them: the player name comes from the arguments as given
+	parser.process(app);
+	QString name;
+	bool nameGiven = parser.isSet("name");
+	if (nameGiven) {
+		name = parser.value("name");
+	}
+	for (int i = 1; i < arguments.size() && !nameGiven; ++i) {
+		const QString& arg = arguments.at(i);
+		if ((arg == QLatin1String("--name") || arg == QLatin1String("-name")) && i + 1 < arguments.size()) {
+			name = arguments.at(i + 1);
+			nameGiven = true;
+		} else if (arg.startsWith(QLatin1String("--name=")) || arg.startsWith(QLatin1String("-name="))) {
+			name = arg.section(QLatin1Char('='), 1);
+			nameGiven = true;
+		}
+	}
 
 	QString folder = parser.value("config");
 	if (folder.isEmpty()) {
 		folder = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
 	}
 	Settings settings(folder);
-	if (parser.isSet("name")) {
-		settings.setName(parser.value("name"));
+	if (nameGiven) {
+		settings.setName(name);
 	}
 	if (parser.isSet("device")) {
 		settings.setDeviceId(parser.value("device"));
@@ -129,6 +154,8 @@ int main(int argc, char** argv) {
 
 	ServerManager servers(folder);
 	if (!servers.load(&error)) {
+		fprintf(stderr, "%s\n", qPrintable(error));   // the servers' window shows it too, and saves nothing
+	} else if (servers.config().filledSecrets() && !servers.save(&error)) {
 		fprintf(stderr, "%s\n", qPrintable(error));
 	}
 	LauncherWindow window(&settings, &catalog, &core, &servers);

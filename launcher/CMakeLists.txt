@@ -15,6 +15,9 @@ set_target_properties(nakama-matchmaker-servers PROPERTIES
 	CXX_STANDARD_REQUIRED ON)
 target_include_directories(nakama-matchmaker-servers PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(nakama-matchmaker-servers PUBLIC ${NETPLAY_ONLINE_QT}::Core ${NETPLAY_ONLINE_QT}::Network)
+if(WIN32)
+	target_link_libraries(nakama-matchmaker-servers PUBLIC shell32)   # CommandLineToArgvW
+endif()
 
 # The servers' Lua modules (server/modules/README.md) go next to each program in the build
 # folder, and to share/ when installed, where the programs look for them

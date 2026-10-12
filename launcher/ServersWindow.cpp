@@ -27,7 +27,9 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSpinBox>
+#include <QSysInfo>
 #include <QTabWidget>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -76,6 +78,9 @@ ServersWindow::ServersWindow(ServerManager* manager, Settings* settings, QWidget
 	m_list = new QListWidget;
 	m_list->setFixedWidth(240);
 	connect(m_list, &QListWidget::currentRowChanged, this, [this]() {
+		if (m_loading) {
+			return;   // a list being rebuilt, which shows its server itself
+		}
 		QString id = selected();
 		if (id == m_current) {
 			return;
@@ -90,7 +95,7 @@ ServersWindow::ServersWindow(ServerManager* manager, Settings* settings, QWidget
 			m_loading = false;
 			return;
 		}
-		showServer(id);
+		reload(id);   // a save may have read servers.json again: the list is rebuilt with it
 	});
 	side->addWidget(m_list, 1);
 	QHBoxLayout* listButtons = new QHBoxLayout;
@@ -335,6 +340,18 @@ ServersWindow::ServersWindow(ServerManager* manager, Settings* settings, QWidget
 			bar->setValue(bar->maximum());
 		}
 	});
+	// servers that another program starts or stops
+	QTimer* poll = new QTimer(this);
+	poll->setInterval(3000);
+	connect(poll, &QTimer::timeout, this, [this]() {
+		if (isVisible()) {
+			for (const ServerProfile& s : m_manager->config().servers()) {
+				updateItem(s.id);
+			}
+			updateState();
+		}
+	});
+	poll->start();
 	reload();
 }
 
@@ -425,8 +442,10 @@ void ServersWindow::updateItem(const QString& id) {
 			continue;
 		}
 		ServerHost::State state = m_manager->state(id);
-		item->setText(QStringLiteral("●  %1\n     %2 · %3").arg(s->title, s->kindsLabel(), ServerHost::stateLabel(state)));
-		item->setForeground(stateColor(state));
+		ServerHost* h = m_manager->host(id);
+		bool elsewhere = !(h && h->active()) && ServerHost::runningElsewhere(m_manager->config().dataDir(*s));
+		item->setText(QStringLiteral("●  %1\n     %2 · %3").arg(s->title, s->kindsLabel(), elsewhere ? tr("Running elsewhere") : ServerHost::stateLabel(state)));
+		item->setForeground(stateColor(elsewhere ? ServerHost::State::Running : state));
 		item->setToolTip(s->id);
 	}
 }
@@ -494,25 +513,36 @@ void ServersWindow::updateState() {
 	ServerHost::State state = m_manager->state(m_current);
 	ServerHost* h = m_manager->host(m_current);
 	bool active = h && h->active();
+	// run by another program (the command line, a service): this window does not start,
+	// stop or remove it
+	QString otherHost;
+	bool elsewhere = s && !active && ServerHost::runningElsewhere(m_manager->config().dataDir(*s), nullptr, &otherHost);
 	QString label = s ? ServerHost::stateLabel(state) : QString();
 	if (state == ServerHost::State::Failed && h) {
 		label += QStringLiteral(": ") + h->error();
 	}
+	if (elsewhere) {
+		label = otherHost.isEmpty() || otherHost == QSysInfo::machineHostName()
+		            ? tr("Running in another program")
+		            : tr("Locked by the computer %1 (server.lock): delete that file if no program runs the server there").arg(otherHost);
+	}
 	m_stateLabel->setText(label);
 	m_stateLabel->setStyleSheet(QStringLiteral("color: %1;").arg(stateColor(state).name()));
-	m_start->setEnabled(s && !active);
+	m_start->setEnabled(s && !active && !elsewhere);
 	m_stop->setEnabled(s && active && state != ServerHost::State::Stopping);
 	m_use->setEnabled(s && (s->tlsCertificate.isEmpty() || !s->publicHost.isEmpty()));
 	m_use->setToolTip(s && !s->tlsCertificate.isEmpty() && s->publicHost.isEmpty() ? tr("With TLS, the launcher connects to the address the certificate names: set the public address")
 	                                                                           : tr("Sign this launcher in to this server (Settings > Nakama server)"));
 	m_ikemen->setEnabled(s);
 	m_folder->setEnabled(s);
-	m_remove->setEnabled(s && !active);
+	m_remove->setEnabled(s && !active && !elsewhere);
 	m_form->setEnabled(s && !active);
 	m_save->setEnabled(s && !active && m_dirty);
-	if (s) {
+	if (!m_manager->config().loadError().isEmpty()) {
+		m_connect->setText(tr("servers.json cannot be read (%1). Nothing is saved until it is fixed or moved away.").arg(m_manager->config().loadError()));
+	} else if (s) {
 		QString info = m_manager->connectionInfo(*s).mid(0, 4).join(QStringLiteral(" · "));
-		if (state == ServerHost::State::Running) {
+		if (state == ServerHost::State::Running || elsewhere) {
 			info = tr("Players connect with: %1").arg(info);
 		} else {
 			info = tr("When it runs, players connect with: %1").arg(info);
@@ -564,22 +594,29 @@ bool ServersWindow::save() {
 	if (m_current.isEmpty()) {
 		return true;
 	}
+	// read again first, so that the settings the form does not show stay as another program
+	// may have set them
+	bool refreshed = refresh();
+	ServerConfig& config = m_manager->config();
+	if (!config.loadError().isEmpty()) {
+		m_formError->setText(tr("servers.json cannot be read (%1): nothing was saved.").arg(config.loadError()));
+		return false;
+	}
+	if (!config.find(m_current)) {
+		QString gone = m_current;
+		m_dirty = false;
+		reload();
+		m_formError->setText(tr("Another program removed the server %1, so the changes were not saved.").arg(gone));
+		return false;
+	}
 	ServerProfile p = edited();
 	if (p.title.isEmpty()) {
 		p.title = p.id;
-	}
-	bool refreshed = refresh();
-	if (!m_manager->config().find(p.id)) {
-		m_formError->setText(tr("Another program removed the server %1.").arg(p.id));
-		m_dirty = false;
-		reload();
-		return false;
 	}
 	if (!p.managedDatabase() && m_external->isChecked() && p.database.isEmpty()) {
 		m_formError->setText(tr("Enter the database's address, or let the server have its own."));
 		return false;
 	}
-	ServerConfig& config = m_manager->config();
 	QString invalid = config.validate(p);
 	if (!invalid.isEmpty()) {
 		m_formError->setText(invalid);
@@ -619,6 +656,7 @@ bool ServersWindow::settle() {
 		return save();
 	}
 	m_dirty = false;
+	showServer(m_current);   // the saved settings again
 	return true;
 }
 
@@ -686,6 +724,11 @@ void ServersWindow::add() {
 		return;
 	}
 	ServerProfile p = config.create(id->text().trimmed(), chosen);
+	QString taken = config.folderTaken(p);
+	if (!taken.isEmpty()) {
+		QMessageBox::warning(this, windowTitle(), taken);
+		return;
+	}
 	if (!title->text().trimmed().isEmpty()) {
 		p.title = title->text().trimmed();
 	}
@@ -749,6 +792,9 @@ void ServersWindow::start() {
 }
 
 void ServersWindow::useInLauncher() {
+	if (!settle()) {
+		return;
+	}
 	const ServerProfile* s = m_manager->config().find(m_current);
 	if (!s) {
 		return;
@@ -773,6 +819,9 @@ void ServersWindow::useInLauncher() {
 }
 
 void ServersWindow::writeIkemenProfile() {
+	if (!settle()) {
+		return;
+	}
 	const ServerProfile* s = m_manager->config().find(m_current);
 	if (!s) {
 		return;

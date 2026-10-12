@@ -66,6 +66,8 @@ public:
 	bool load(QString* error);
 	bool save(QString* error) const;
 	bool filledSecrets() const { return m_filled; }
+	/* Why servers.json could not be read; while it is set, save() refuses to overwrite it. */
+	QString loadError() const { return m_loadError; }
 	/* Whether another program (the command line, another window) changed servers.json
 	 * since it was read or written here. */
 	bool changedOnDisk() const;
@@ -89,6 +91,9 @@ public:
 	/* Why a folder cannot be a server's data folder (the home folder, a root, the
 	 * configuration folder), or an empty string. */
 	QString checkDataDir(const QString& folder) const;
+	/* Why a new server cannot have its folder: it holds files already (a removed server's
+	 * database, whose password the new server would not know). */
+	QString folderTaken(const ServerProfile&) const;
 
 	static QString secret();
 	/* "ikemen", "gba"/"mgba", "ds"/"melonds"; empty for anything else. */
@@ -107,5 +112,6 @@ private:
 	QString m_folder;
 	QList<ServerProfile> m_servers;
 	bool m_filled = false;
+	QString m_loadError;
 	mutable QDateTime m_stamp;   // servers.json's time when last read or written here
 };

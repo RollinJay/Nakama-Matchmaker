@@ -21,6 +21,7 @@
 #include <unistd.h>
 #endif
 #ifdef Q_OS_WIN
+#include <shellapi.h>
 #include <windows.h>
 #endif
 
@@ -78,9 +79,14 @@ void installStopHandler(std::function<void()> onStop) {
 	action.sa_handler = onSignal;
 	sigemptyset(&action.sa_mask);
 	action.sa_flags = SA_RESTART;
-	sigaction(SIGINT, &action, nullptr);
-	sigaction(SIGTERM, &action, nullptr);
-	sigaction(SIGHUP, &action, nullptr);
+	for (int signal : { SIGINT, SIGTERM, SIGHUP }) {
+		// a signal the program was started to ignore (nohup ignores SIGHUP) stays ignored
+		struct sigaction old = {};
+		if (sigaction(signal, nullptr, &old) == 0 && old.sa_handler == SIG_IGN) {
+			continue;
+		}
+		sigaction(signal, &action, nullptr);
+	}
 #endif
 #ifdef Q_OS_WIN
 	SetConsoleCtrlHandler(onConsoleEvent, TRUE);
@@ -264,12 +270,33 @@ QString usage() {
 
 }
 
-bool isServerCommand(int argc, char** argv, QString* configFolder, QStringList* rest) {
+QStringList commandLineArguments(int argc, char** argv) {
+	QStringList out;
+#ifdef Q_OS_WIN
+	Q_UNUSED(argc);
+	Q_UNUSED(argv);
+	int count = 0;
+	LPWSTR* wide = CommandLineToArgvW(GetCommandLineW(), &count);
+	if (wide) {
+		for (int i = 0; i < count; ++i) {
+			out.append(QString::fromWCharArray(wide[i]));
+		}
+		LocalFree(wide);
+		return out;
+	}
+#endif
+	for (int i = 0; i < argc; ++i) {
+		out.append(QString::fromLocal8Bit(argv[i]));
+	}
+	return out;
+}
+
+bool isServerCommand(const QStringList& arguments, QString* configFolder, QStringList* rest) {
 	// the launcher's options that take a value
 	static const QStringList withValue { QStringLiteral("config"), QStringLiteral("name"), QStringLiteral("device"),
 		                                 QStringLiteral("host"), QStringLiteral("port"), QStringLiteral("auto") };
-	for (int i = 1; i < argc; ++i) {
-		QString arg = QString::fromLocal8Bit(argv[i]);
+	for (int i = 1; i < arguments.size(); ++i) {
+		QString arg = arguments.at(i);
 		if (arg.startsWith(QLatin1Char('-'))) {
 			QString name = arg.mid(arg.startsWith(QLatin1String("--")) ? 2 : 1);
 			QString value;
@@ -278,8 +305,8 @@ bool isServerCommand(int argc, char** argv, QString* configFolder, QStringList* 
 				value = name.section(QLatin1Char('='), 1);
 				name = name.section(QLatin1Char('='), 0, 0);
 			}
-			if (withValue.contains(name) && !inlineValue && i + 1 < argc) {
-				value = QString::fromLocal8Bit(argv[++i]);
+			if (withValue.contains(name) && !inlineValue && i + 1 < arguments.size()) {
+				value = arguments.at(++i);
 			}
 			if (name == QLatin1String("config")) {
 				*configFolder = value;
@@ -289,21 +316,18 @@ bool isServerCommand(int argc, char** argv, QString* configFolder, QStringList* 
 		if (arg != QLatin1String("server")) {
 			return false;
 		}
-		rest->clear();
-		for (int j = i + 1; j < argc; ++j) {
-			rest->append(QString::fromLocal8Bit(argv[j]));
-		}
+		*rest = arguments.mid(i + 1);
 		return true;
 	}
 	return false;
 }
 
-void splitServerArguments(int argc, char** argv, QString* configFolder, QStringList* rest) {
+void splitServerArguments(const QStringList& arguments, QString* configFolder, QStringList* rest) {
 	rest->clear();
-	for (int i = 1; i < argc; ++i) {
-		QString arg = QString::fromLocal8Bit(argv[i]);
-		if (rest->isEmpty() && (arg == QLatin1String("--config") || arg == QLatin1String("-config")) && i + 1 < argc) {
-			*configFolder = QString::fromLocal8Bit(argv[++i]);
+	for (int i = 1; i < arguments.size(); ++i) {
+		const QString& arg = arguments.at(i);
+		if (rest->isEmpty() && (arg == QLatin1String("--config") || arg == QLatin1String("-config")) && i + 1 < arguments.size()) {
+			*configFolder = arguments.at(++i);
 		} else if (rest->isEmpty() && arg.startsWith(QLatin1String("--config="))) {
 			*configFolder = arg.mid(9);
 		} else {
@@ -312,8 +336,12 @@ void splitServerArguments(int argc, char** argv, QString* configFolder, QStringL
 	}
 }
 
-int runServerCommand(const QString& configFolder, const QStringList& args, const QString& program) {
+int runServerCommand(const QString& configFolder, const QStringList& givenArgs, const QString& program) {
 	g_program = program;
+	// --config may also come after "server", as the usage shows it
+	QString folderOption = configFolder;
+	QStringList args;
+	splitServerArguments(QStringList { program } + givenArgs, &folderOption, &args);
 	QString command = args.value(0);
 	if (command.isEmpty() || command == QLatin1String("--help") || command == QLatin1String("-h") || command == QLatin1String("help")) {
 		fprintf(command.isEmpty() ? stderr : stdout, "%s", qPrintable(usage()));
@@ -379,7 +407,7 @@ int runServerCommand(const QString& configFolder, const QStringList& args, const
 	}
 	QStringList positional = parser.positionalArguments().mid(1);
 
-	QString folder = configFolder;
+	QString folder = folderOption;
 	if (folder.isEmpty()) {
 		QCoreApplication::setApplicationName(QStringLiteral("nakama-matchmaker"));
 		folder = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
@@ -440,6 +468,13 @@ int runServerCommand(const QString& configFolder, const QStringList& args, const
 				return fail(QStringLiteral("Say which games the server is for: --kinds ikemen, gba, ds (comma separated) or all"));
 			}
 			s = config.create(id, QStringList());
+			if (parser.isSet("data-dir")) {
+				s.dataDir = QFileInfo(parser.value("data-dir")).absoluteFilePath();
+			}
+			QString taken = config.folderTaken(s);
+			if (!taken.isEmpty()) {
+				return fail(taken);
+			}
 		} else {
 			const ServerProfile* existing = config.find(id);
 			if (!existing) {
@@ -608,6 +643,9 @@ int runServerCommand(const QString& configFolder, const QStringList& args, const
 			stopAll();
 		});
 		for (const QString& id : ids) {
+			if (stopping) {
+				break;   // a server has failed already: the others are not started
+			}
 			if (!manager.start(id, &error)) {
 				fprintf(stderr, "[%s] %s\n", qPrintable(id), qPrintable(error));
 				exitCode = 1;

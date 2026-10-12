@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -19,16 +20,21 @@ namespace {
 
 const char* const KINDS[] = { "ikemen", "mgba", "melonds" };
 
+/* A database address, with or without its postgres:// scheme. */
+QUrl addressUrl(const QString& address) {
+	QString text = address;
+	if (!text.startsWith(QLatin1String("postgres://")) && !text.startsWith(QLatin1String("postgresql://"))) {
+		text = QStringLiteral("postgres://") + text;
+	}
+	return QUrl(text);
+}
+
 /* An external database as host:port/database, to tell when two servers share one. */
 QString databaseKey(const ServerProfile& s) {
 	if (s.managedDatabase()) {
 		return QString();
 	}
-	QString text = s.database;
-	if (!text.startsWith(QLatin1String("postgres://")) && !text.startsWith(QLatin1String("postgresql://"))) {
-		text = QStringLiteral("postgres://") + text;
-	}
-	QUrl url(text);
+	QUrl url = addressUrl(s.database);
 	QString name = url.path().mid(1);
 	return QStringLiteral("%1:%2/%3").arg(url.host().toLower()).arg(url.port(5432)).arg(name.isEmpty() ? QStringLiteral("nakama") : name);
 }
@@ -46,26 +52,42 @@ QStringList toList(const QJsonValue& v) {
 	return out;
 }
 
-/* A YAML double-quoted scalar. */
+/* A YAML double-quoted scalar. YAML refuses non-printable characters even there, so they
+ * go in as escapes. */
 QByteArray yamlString(const QString& text) {
 	QByteArray out = "\"";
-	for (char c : text.toUtf8()) {
-		unsigned char u = static_cast<unsigned char>(c);
+	for (uint c : text.toUcs4()) {
 		if (c == '"' || c == '\\') {
 			out += '\\';
-			out += c;
+			out += char(c);
 		} else if (c == '\n') {
 			out += "\\n";
 		} else if (c == '\t') {
 			out += "\\t";
-		} else if (u < 0x20 || u == 0x7F) {
-			out += QByteArray("\\x") + QByteArray::number(u, 16).rightJustified(2, '0');
+		} else if (c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) || c == 0x2028 || c == 0x2029 || c == 0xFEFF || c == 0xFFFE || c == 0xFFFF ||
+		           (c >= 0xD800 && c <= 0xDFFF)) {
+			out += "\\u" + QByteArray::number(c, 16).rightJustified(4, '0');
 		} else {
-			out += c;
+			char32_t code = c;
+			out += QString::fromUcs4(&code, 1).toUtf8();
 		}
 	}
 	out += '"';
 	return out;
+}
+
+/* Whether two listen addresses share a port: either is every address, or both are one. */
+bool overlap(const QString& a, const QString& b) {
+	auto any = [](const QString& x) { return x.isEmpty() || x == QLatin1String("0.0.0.0") || x == QLatin1String("::"); };
+	return any(a) || any(b) || QHostAddress(a) == QHostAddress(b);
+}
+
+/* Where each of a server's ports listens. */
+QString portAddress(const ServerProfile& s, const QString& use) {
+	if (use == QLatin1String("database") || (use.startsWith(QLatin1String("console")) && !s.consolePublic)) {
+		return QStringLiteral("127.0.0.1");
+	}
+	return use.startsWith(QLatin1String("console")) ? QString() : s.bind;
 }
 
 }
@@ -131,26 +153,29 @@ bool ServerConfig::changedOnDisk() const {
 }
 
 bool ServerConfig::load(QString* error) {
-	m_servers.clear();
-	m_filled = false;
-	m_stamp = QFileInfo(path()).lastModified();
+	// what was read before stays until the file has been read in full: a file that cannot be
+	// read must not turn into an empty list, which a save would then write
+	QDateTime stamp = QFileInfo(path()).lastModified();
 	QFile file(path());
 	if (!file.exists()) {
+		m_servers.clear();
+		m_filled = false;
+		m_loadError.clear();
+		m_stamp = stamp;
 		return true;
 	}
 	if (!file.open(QIODevice::ReadOnly)) {
-		*error = QStringLiteral("%1: %2").arg(path(), file.errorString());
+		*error = m_loadError = QStringLiteral("%1: %2").arg(path(), file.errorString());
 		return false;
 	}
 	QJsonParseError parseError;
 	QJsonObject root = QJsonDocument::fromJson(file.readAll(), &parseError).object();
 	if (parseError.error != QJsonParseError::NoError) {
-		*error = QStringLiteral("%1: %2").arg(path(), parseError.errorString());
+		*error = m_loadError = QStringLiteral("%1: %2").arg(path(), parseError.errorString());
 		return false;
 	}
-	nakamaPath = root.value(QStringLiteral("nakama")).toString();
-	postgresPath = root.value(QStringLiteral("postgres")).toString();
-	modulesPath = root.value(QStringLiteral("modules")).toString();
+	QList<ServerProfile> servers;
+	bool filled = false;
 	for (const QJsonValue& v : root.value(QStringLiteral("servers")).toArray()) {
 		QJsonObject o = v.toObject();
 		ServerProfile s;
@@ -188,25 +213,37 @@ bool ServerConfig::load(QString* error) {
 		for (QString* secret : { &s.serverKey, &s.httpKey, &s.sessionKey, &s.refreshKey, &s.consolePassword, &s.consoleSigningKey, &s.mfaKey }) {
 			if (secret->isEmpty()) {
 				*secret = ServerConfig::secret();
-				m_filled = true;
+				filled = true;
 			}
 		}
 		if (s.consoleUser.isEmpty()) {
 			s.consoleUser = QStringLiteral("operator");
-			m_filled = true;
+			filled = true;
 		}
 		// a server's own database gets its password when it is created, so a missing one
 		// can be made only while there is no database yet
 		if (s.managedDatabase() && s.databasePassword.isEmpty() && !QFileInfo::exists(QDir(dataDir(s)).filePath(QStringLiteral("postgres")))) {
 			s.databasePassword = ServerConfig::secret();
-			m_filled = true;
+			filled = true;
 		}
-		m_servers.append(s);
+		servers.append(s);
 	}
+	nakamaPath = root.value(QStringLiteral("nakama")).toString();
+	postgresPath = root.value(QStringLiteral("postgres")).toString();
+	modulesPath = root.value(QStringLiteral("modules")).toString();
+	m_servers = servers;
+	m_filled = filled;
+	m_loadError.clear();
+	m_stamp = stamp;
 	return true;
 }
 
 bool ServerConfig::save(QString* error) const {
+	if (!m_loadError.isEmpty()) {
+		*error = QStringLiteral("Nothing was saved: %1 could not be read (%2). Fix the file, or move it away, then open the servers again.")
+		             .arg(QDir::toNativeSeparators(path()), m_loadError);
+		return false;
+	}
 	QJsonArray servers;
 	for (const ServerProfile& s : m_servers) {
 		QJsonObject o {
@@ -370,6 +407,15 @@ QString ServerConfig::validate(const ServerProfile& s) const {
 			}
 		}
 	}
+	for (QChar c : s.serverKey) {
+		// clients send the key as an HTTP basic-auth user name, which ends at the first ':'
+		if (c == QLatin1Char(':') || c.unicode() <= 0x20 || c.unicode() == 0x7F) {
+			return QStringLiteral("The server key may not hold ':', spaces or control characters.");
+		}
+	}
+	if (!s.bind.isEmpty() && QHostAddress(s.bind).isNull()) {
+		return QStringLiteral("The listen address must be an IP address, such as 0.0.0.0 or 192.168.1.20 (or empty: every address).");
+	}
 	QStringList keys { s.serverKey, s.httpKey, s.sessionKey, s.refreshKey, s.consoleSigningKey, s.mfaKey };
 	for (const QString& key : keys) {
 		if (key.isEmpty()) {
@@ -393,7 +439,7 @@ QString ServerConfig::validate(const ServerProfile& s) const {
 		return QStringLiteral("The database needs a password.");
 	}
 	if (!s.managedDatabase()) {
-		QUrl url(QStringLiteral("postgres://") + s.database);
+		QUrl url = addressUrl(s.database);
 		if (!url.isValid() || url.host().isEmpty()) {
 			return QStringLiteral("The database address is not valid; it looks like user:password@host:port/database.");
 		}
@@ -423,10 +469,6 @@ QString ServerConfig::validate(const ServerProfile& s) const {
 
 QStringList ServerConfig::conflicts(const ServerProfile& s) const {
 	QStringList out;
-	QSet<int> mine;
-	for (const auto& p : s.ports()) {
-		mine.insert(p.first);
-	}
 	QString myData = QDir::cleanPath(dataDir(s));
 	QString myDatabase = databaseKey(s);
 	for (const ServerProfile& other : m_servers) {
@@ -436,8 +478,10 @@ QStringList ServerConfig::conflicts(const ServerProfile& s) const {
 		// two Nakama servers on one database share its accounts and records, but not their
 		// matches, so the records of one name matches the other cannot find
 		bool shared = QDir::cleanPath(dataDir(other)) == myData || (!myDatabase.isEmpty() && databaseKey(other) == myDatabase);
-		for (const auto& p : other.ports()) {
-			shared = shared || mine.contains(p.first);
+		for (const auto& mine : s.ports()) {
+			for (const auto& theirs : other.ports()) {
+				shared = shared || (mine.first == theirs.first && overlap(portAddress(s, mine.second), portAddress(other, theirs.second)));
+			}
 		}
 		if (shared) {
 			out.append(other.id);
@@ -466,6 +510,15 @@ QString ServerConfig::checkDataDir(const QString& folder) const {
 				return QStringLiteral("%1 cannot be a server's folder: give each server a folder of its own.").arg(QDir::toNativeSeparators(path));
 			}
 		}
+	}
+	return QString();
+}
+
+QString ServerConfig::folderTaken(const ServerProfile& s) const {
+	QDir dir(dataDir(s));
+	if (dir.exists() && !dir.entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden).isEmpty()) {
+		return QStringLiteral("%1 already holds files, such as those of a removed server, whose database has another password. Delete the folder, or give the new server another one (--data-dir).")
+		    .arg(QDir::toNativeSeparators(dir.path()));
 	}
 	return QString();
 }
@@ -547,7 +600,9 @@ QByteArray ServerConfig::nakamaYaml(const ServerProfile& s, const QString& dataD
 	y += "  server_key: " + yamlString(s.serverKey) + "\n";
 	y += "  port: " + QByteArray::number(s.port) + "\n";
 	if (!s.bind.isEmpty()) {
-		y += "  address: " + yamlString(s.bind) + "\n";
+		// Nakama joins the address and the port with ':', so an IPv6 address goes in brackets
+		bool v6 = QHostAddress(s.bind).protocol() == QAbstractSocket::IPv6Protocol;
+		y += "  address: " + yamlString(v6 ? QLatin1Char('[') + s.bind + QLatin1Char(']') : s.bind) + "\n";
 	}
 	// IKEMEN GO's replay stream headers and melonDS's signals exceed Nakama's 4096-byte default
 	y += "  max_message_size_bytes: 65536\n";

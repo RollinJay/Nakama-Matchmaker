@@ -61,13 +61,13 @@ Both read and write the same configuration folder as the launcher's window (`--c
 | `list` | the servers, their games and ports |
 | `add <id> --kinds <kinds> [options]` | a new server; `--kinds` is `ikemen`, `gba`, `ds` (comma separated) or `all` |
 | `set <id> [options]` | changes a server (a running server takes the changes at its next start) |
-| `remove <id> [--delete-data]` | forgets a server; `--delete-data` also deletes its folder, database included |
+| `remove <id> [--delete-data]` | forgets a server; `--delete-data` also deletes its folder, database included (a new server cannot reuse a kept folder: its database has the old server's password) |
 | `show <id> [--secrets]` | a server's settings and what players enter; `--secrets` adds the console's password and the other keys |
 | `run <id>... \| --all` | runs servers until Ctrl+C or SIGTERM, printing their logs |
 | `ikemen-profile <id> <file>` | writes an IKEMEN GO server profile (`--game`, `--build`, `--host`, `--region`, `--stun`) |
 | `programs [--nakama <file>] [--postgres <folder>] [--modules <folder>]` | the programs every server uses, as set or found |
 
-`run` stops every server when one of them fails, and then exits with status 1, so that a service manager can restart them; Ctrl+C or SIGTERM stops them in order (Nakama first, then its database) and exits with status 0. `<command> --help` lists a command's options; the options of `add` and `set` are the [settings](#settings) below.
+`run` stops every server when one of them fails, and then exits with status 1, so that a service manager can restart them; Ctrl+C or SIGTERM stops them in order (Nakama first, then its database) and exits with status 0, as does SIGHUP unless the program was started with `nohup`. `<command> --help` lists a command's options; the options of `add` and `set` are the [settings](#settings) below.
 
 For example, a DS community on a VPS:
 
@@ -113,9 +113,9 @@ WantedBy=multi-user.target
 | Games / `--kinds` | IKEMEN GO, GBA, DS: see [What each kind of game gets](#what-each-kind-of-game-gets). | |
 | Port / `--port` | The TCP port players connect to. Nakama also takes the port before it, for its gRPC API, which players do not use. | 7350, then 7360, 7370, ... |
 | Console / `--console-port` | The port of Nakama's web console, for the server's operator. It listens on this computer only; Nakama also takes the port 3 below it. | the port + 1 |
-| Listen address / `--bind` | The address the server listens on. | every address |
+| Listen address / `--bind` | The IP address the server listens on (IPv4 or IPv6). Servers on different addresses can share a port. | every address |
 | Public address, port, TLS / `--public-host`, `--public-port`, `--client-tls` | What players enter, when it differs from what the server listens on: its name on the internet, and the port and TLS of a proxy in front of it ([TLS](#tls)). Used by `show`, the window and IKEMEN GO profiles. | this computer, the port, no TLS |
-| Server key / `--server-key` | The key players enter with the address. It is not a password: every player gets it. `--server-key new` makes a new one. | random |
+| Server key / `--server-key` | The key players enter with the address, without `:`, spaces or control characters. It is not a password: every player gets it. `--server-key new` makes a new one. | random |
 | Database / `--database`, `--database-port` | A database of its own (on 127.0.0.1, at the given port), or the address of an existing one (`user:password@host:port/database`; `managed` goes back to a database of its own). | its own, at 54330, 54331, ... |
 | TLS certificate and key / `--tls-cert`, `--tls-key` | For Nakama to use TLS itself ([TLS](#tls)). | none |
 | More modules / `--extra-modules` | A folder of Lua modules of your own ([Your own modules](#your-own-modules)). | none |
@@ -145,12 +145,14 @@ Each server has a folder of its own, `servers/<id>` in the configuration folder 
 | `postgres/` | the server's database, when it has one of its own |
 | `nakama/` | Nakama's own files |
 | `server.log`, `server.log.1` | the log of Nakama, the database and Nakama Matchmaker; past 10 MB the log moves to `server.log.1` |
-| `server.lock` | taken while a program runs the server, so that two programs never run one server |
+| `server.lock` | taken while a program runs the server, so that two programs never run one server; the window shows a server that another program runs, and leaves it to that program |
 | `nakama.pid` | which process runs Nakama, so that the next start can stop a Nakama left running by a program that ended without stopping it |
 
 The accounts, ratings and everything else the server keeps are in the database. To back up a server with a database of its own, stop it and copy its `postgres` folder. A database made by one major version of PostgreSQL needs that version's programs: after installing a newer PostgreSQL, either keep the folder of the older one's programs in the settings, or upgrade the database with `pg_upgrade`.
 
-When the program that ran a server ended without stopping it (a crash, a forced quit), the next start finds what is left, by its process, its program and its port, and stops it first. On Linux, Nakama and the database end with the program that started them anyway.
+When the program that ran a server ended without stopping it (a crash, a forced quit), the next start finds what is left, by its process, its program, its command line and its port, and stops it first. On Linux, Nakama and the database end with the program that started them anyway.
+
+In a container, the program can be its first process (no `--init` needed). A `server.lock` written under another computer name, as when a container is recreated with a new hostname, cannot be checked: the start then says so, and the file can be deleted when no program runs the server. Giving the container a fixed hostname avoids that.
 
 ## Your own modules
 

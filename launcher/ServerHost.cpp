@@ -14,6 +14,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QSysInfo>
 #include <QTcpServer>
 #include <QUrl>
 
@@ -140,14 +141,17 @@ HANDLE childJob() {
 #ifdef Q_OS_UNIX
 /* In the child, before the program starts: a process group of its own, so that a Ctrl+C in
  * the terminal reaches only the matchmaker, which then stops the server in order; and, on
- * Linux, the end of the program when the matchmaker ends, even when it is killed. */
-void prepareChild() {
+ * Linux, the end of the program when the matchmaker (parent) ends, even when it is
+ * killed. */
+void prepareChild(pid_t parent) {
 	::setpgid(0, 0);
 #ifdef Q_OS_LINUX
 	::prctl(PR_SET_PDEATHSIG, SIGTERM);
-	if (::getppid() == 1) {
-		::_exit(1);   // the matchmaker already ended
+	if (::getppid() != parent) {
+		::_exit(1);   // the matchmaker ended before the signal was set up
 	}
+#else
+	Q_UNUSED(parent);
 #endif
 }
 #endif
@@ -156,8 +160,12 @@ class ServerProcess : public QProcess {
 public:
 	explicit ServerProcess(QObject* parent)
 		: QProcess(parent) {
+#ifdef Q_OS_UNIX
+		m_parent = ::getpid();
+#endif
 #if defined(Q_OS_UNIX) && QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-		setChildProcessModifier(prepareChild);
+		pid_t matchmaker = m_parent;
+		setChildProcessModifier([matchmaker]() { prepareChild(matchmaker); });
 #endif
 #ifdef Q_OS_WIN
 		setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) { args->flags |= CREATE_NEW_PROCESS_GROUP; });
@@ -174,8 +182,13 @@ public:
 #if defined(Q_OS_UNIX) && QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
 protected:
 	void setupChildProcess() override {
-		prepareChild();
+		prepareChild(m_parent);
 	}
+#endif
+
+private:
+#ifdef Q_OS_UNIX
+	pid_t m_parent = 0;
 #endif
 };
 
@@ -213,6 +226,21 @@ QStringList registrations(const QString& file) {
 		out.append(named && !name.isEmpty() ? kind + QLatin1Char(':') + name : kind);
 	}
 	return out;
+}
+
+/* A process's command line, where the system tells it; empty otherwise. */
+QString processCommandLine(qint64 pid) {
+#ifdef Q_OS_LINUX
+	QFile file(QStringLiteral("/proc/%1/cmdline").arg(pid));
+	if (file.open(QIODevice::ReadOnly)) {
+		QByteArray raw = file.readAll();
+		raw.replace('\0', ' ');
+		return QString::fromLocal8Bit(raw);
+	}
+#else
+	Q_UNUSED(pid);
+#endif
+	return QString();
 }
 
 bool inside(const QString& path, const QString& folder) {
@@ -423,22 +451,25 @@ bool ServerHost::installModules(const ServerProfile& profile, const QString& bun
 	return true;
 }
 
-bool ServerHost::runningElsewhere(const QString& dataDir, qint64* pid) {
-	if (!QFileInfo::exists(dataDir)) {
-		return false;
-	}
+bool ServerHost::runningElsewhere(const QString& dataDir, qint64* pid, QString* hostname) {
+	// read only: taking the lock to test it could make another program's start fail
 	QLockFile lock(QDir(dataDir).filePath(QStringLiteral("server.lock")));
-	lock.setStaleLockTime(0);
-	if (lock.tryLock(0)) {
-		lock.unlock();
+	qint64 owner = 0;
+	QString host;
+	QString app;
+	if (!QFileInfo::exists(dataDir) || !lock.getLockInfo(&owner, &host, &app)) {
 		return false;
 	}
 	if (pid) {
-		QString hostname;
-		QString app;
-		lock.getLockInfo(pid, &hostname, &app);
+		*pid = owner;
 	}
-	return true;
+	if (hostname) {
+		*hostname = host;
+	}
+	if (!host.isEmpty() && host != QSysInfo::machineHostName()) {
+		return true;   // another computer's program says so, which this one cannot check
+	}
+	return owner != QCoreApplication::applicationPid() && processAlive(owner);
 }
 
 QString ServerHost::busyPort(const ServerProfile& profile) {
@@ -537,9 +568,24 @@ bool ServerHost::start(const ServerProfile& profile, const QString& dataDir, con
 		QString hostname;
 		QString app;
 		m_lock->getLockInfo(&pid, &hostname, &app);
-		m_lock.reset();
-		*error = tr("The server %1 is already running in another program (process %2).").arg(profile.id).arg(pid);
-		return false;
+		if (pid == QCoreApplication::applicationPid() && (hostname.isEmpty() || hostname == QSysInfo::machineHostName())) {
+			// this very process, which runs this server nowhere else (the servers' folders
+			// differ): the lock of an earlier life of a container, where the program is
+			// process 1 again
+			m_lock->removeStaleLockFile();
+		}
+		if (!m_lock->isLocked() && !m_lock->tryLock(0)) {
+			m_lock.reset();
+			if (!hostname.isEmpty() && hostname != QSysInfo::machineHostName()) {
+				*error = tr("server.lock says that the server %1 runs on the computer %2 (process %3). If no program runs it there, delete %4.")
+				             .arg(profile.id, hostname)
+				             .arg(pid)
+				             .arg(QDir::toNativeSeparators(dir.filePath(QStringLiteral("server.lock"))));
+			} else {
+				*error = tr("The server %1 is already running in another program (process %2).").arg(profile.id).arg(pid);
+			}
+			return false;
+		}
 	}
 
 	QString logPath = dir.filePath(QStringLiteral("server.log"));
@@ -661,7 +707,10 @@ QProcess* ServerHost::spawn(const QString& source, const QString& program, const
 	connect(process, &QProcess::readyRead, this, [drain]() { drain(false); });
 	connect(process, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
 	        [drain](int, QProcess::ExitStatus) { drain(true); });
-	process->start(program, args);
+	// not started yet: Qt may report a failure, and on Windows the start, inside start(),
+	// so the caller connects to the process first and then calls start()
+	process->setProgram(program);
+	process->setArguments(args);
 	return process;
 }
 
@@ -669,10 +718,6 @@ void ServerHost::runTool(const QString& source, const QString& program, const QS
 	int generation = m_generation;
 	QProcess* process = spawn(source, program, args);
 	m_tool = process;
-	if (!input.isNull()) {
-		process->write(input);
-		process->closeWriteChannel();
-	}
 	auto finish = [this, process, generation, done](int code, bool crashed) {
 		if (m_tool == process) {
 			m_tool = nullptr;
@@ -690,6 +735,11 @@ void ServerHost::runTool(const QString& source, const QString& program, const QS
 	});
 	connect(process, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
 	        [finish](int code, QProcess::ExitStatus status) { finish(code, status == QProcess::CrashExit); });
+	process->start();
+	if (!input.isNull() && process->state() != QProcess::NotRunning) {
+		process->write(input);
+		process->closeWriteChannel();
+	}
 }
 
 /* A Nakama of an earlier run of this server that is still running, after the program that
@@ -705,7 +755,12 @@ void ServerHost::stopLeftoverNakama() {
 		image = lines.value(1).trimmed();
 		file.close();
 	}
-	if (pid <= 0 || !processAlive(pid) || image.isEmpty() || processImage(pid) != image) {
+	// every server runs the same Nakama: where the system tells, the process must also be
+	// this server's (its command line names this folder's nakama.yml)
+	QString commandLine = processCommandLine(pid);
+	bool ours = pid > 0 && processAlive(pid) && !image.isEmpty() && processImage(pid) == image &&
+	            (commandLine.isEmpty() || commandLine.contains(path(QStringLiteral("nakama.yml"))));
+	if (!ours) {
 		QFile::remove(path(QStringLiteral("nakama.pid")));
 		stopLeftoverDatabase();
 		return;
@@ -821,6 +876,11 @@ void ServerHost::initDatabase() {
 		createRole();
 	});
 	// whatever happens to initdb, the password file goes, and so does half a database
+	if (!m_tool) {
+		QFile::remove(passwordFile);
+		QDir(building).removeRecursively();
+		return;   // it did not start
+	}
 	connect(m_tool, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
 	        [building, passwordFile](int code, QProcess::ExitStatus status) {
 		QFile::remove(passwordFile);
@@ -832,10 +892,14 @@ void ServerHost::initDatabase() {
 
 void ServerHost::createRole() {
 	QString building = path(QStringLiteral("postgres.new"));
-	// single-user mode reads one statement per line; the password goes in on standard input
-	QByteArray sql = "CREATE ROLE nakama LOGIN PASSWORD '" + m_profile.databasePassword.toUtf8() + "';\n"
+	// single-user mode reads one statement per line, and ends with the first error only with
+	// exit_on_error; the password goes in on standard input, as an SQL literal
+	QByteArray password = m_profile.databasePassword.toUtf8();
+	password.replace('\'', "''");
+	QByteArray sql = "CREATE ROLE nakama LOGIN PASSWORD '" + password + "';\n"
 	                 "CREATE DATABASE nakama OWNER nakama;\n";
-	runTool(QStringLiteral("postgres"), pgTool(QStringLiteral("postgres")), { QStringLiteral("--single"), QStringLiteral("-D"), building, QStringLiteral("postgres") },
+	runTool(QStringLiteral("postgres"), pgTool(QStringLiteral("postgres")),
+	        { QStringLiteral("--single"), QStringLiteral("-D"), building, QStringLiteral("-c"), QStringLiteral("exit_on_error=on"), QStringLiteral("postgres") },
 	        [this, building](int code, bool) {
 		if (code != 0) {
 			QDir(building).removeRecursively();
@@ -848,6 +912,10 @@ void ServerHost::createRole() {
 		}
 		launchPostgres();
 	}, sql);
+	if (!m_tool) {
+		QDir(building).removeRecursively();
+		return;   // it did not start
+	}
 	connect(m_tool, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
 	        [building](int, QProcess::ExitStatus status) {
 		if (status == QProcess::CrashExit) {
@@ -896,6 +964,10 @@ void ServerHost::launchPostgres() {
 			fail(tr("The database stopped (exit code %1); see the log.").arg(code));
 		}
 	});
+	process->start();
+	if (m_stopping) {
+		return;   // it did not start
+	}
 	m_waitClock.start();
 	waitForDatabase();
 }
@@ -971,6 +1043,10 @@ void ServerHost::launchNakama() {
 			fail(tr("Nakama stopped (exit code %1); see the log.").arg(code));
 		}
 	});
+	process->start();
+	if (m_stopping) {
+		return;   // it did not start
+	}
 	waitForNakama(0);
 }
 

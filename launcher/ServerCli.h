@@ -11,9 +11,13 @@
  * program's exit code. */
 int runServerCommand(const QString& configFolder, const QStringList& args, const QString& program);
 
+/* The program's arguments, with the program first, as the user typed them (on Windows,
+ * from the wide command line, so that no character is lost). */
+QStringList commandLineArguments(int argc, char** argv);
+
 /* Whether a command line asks for the server commands: "server" is its first argument
  * that is neither an option nor an option's value. */
-bool isServerCommand(int argc, char** argv, QString* configFolder, QStringList* rest);
+bool isServerCommand(const QStringList& arguments, QString* configFolder, QStringList* rest);
 
 /* The arguments of nakama-matchmaker-server: --config and its folder, then the command. */
-void splitServerArguments(int argc, char** argv, QString* configFolder, QStringList* rest);
+void splitServerArguments(const QStringList& arguments, QString* configFolder, QStringList* rest);

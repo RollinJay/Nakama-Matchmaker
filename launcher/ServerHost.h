@@ -77,8 +77,9 @@ public:
 	/* Builds the modules folder of a server: the bundled sets, then the operator's own
 	 * modules, which replace bundled ones of the same name. Notes go to the log lines. */
 	static bool installModules(const ServerProfile&, const QString& bundled, const QString& target, QStringList* notes, QString* error);
-	/* Whether another program runs the server of this data folder now, and its process. */
-	static bool runningElsewhere(const QString& dataDir, qint64* pid = nullptr);
+	/* Whether another program runs the server of this data folder now (its server.lock),
+	 * with its process and computer. */
+	static bool runningElsewhere(const QString& dataDir, qint64* pid = nullptr, QString* hostname = nullptr);
 	/* A port the server needs that a program holds, with what the port is for; empty when
 	 * every port is free. */
 	static QString busyPort(const ServerProfile&);

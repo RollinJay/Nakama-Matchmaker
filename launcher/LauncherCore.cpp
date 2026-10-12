@@ -97,7 +97,15 @@ void LauncherCore::signIn() {
 		emit status(tr("Online as %1.").arg(client->session().username));
 		// a community server says which community it is for; other servers have no such RPC
 		client->rpc(QStringLiteral("community_info"), QJsonObject(), [this, client](bool ok, const QByteArray& reply, const QString&) {
-			if (!ok || client != m_client.get()) {
+			if (client != m_client.get()) {
+				return;
+			}
+			if (!ok) {
+				// not a community server: nothing of an earlier one stays
+				if (!m_community.title.isEmpty() || !m_community.kinds.isEmpty()) {
+					m_community = Community();
+					emit communityChanged();
+				}
 				return;
 			}
 			QJsonObject o = QJsonDocument::fromJson(reply).object();
@@ -124,6 +132,10 @@ void LauncherCore::signIn() {
 	connect(client, &NakamaClient::socketClosed, this, [this](const QString& reason) {
 		emit status(tr("Disconnected: %1").arg(reason));
 		m_ping.stop();
+		if (!m_community.title.isEmpty() || !m_community.kinds.isEmpty()) {
+			m_community = Community();
+			emit communityChanged();
+		}
 		m_members.clear();
 		emit membersChanged();
 		if (m_state != State::Playing) {

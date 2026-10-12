@@ -13,6 +13,6 @@ int main(int argc, char** argv) {
 	QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
 	QString config;
 	QStringList args;
-	splitServerArguments(argc, argv, &config, &args);
+	splitServerArguments(commandLineArguments(argc, argv), &config, &args);
 	return runServerCommand(config, args, QStringLiteral("nakama-matchmaker-server"));
 }
