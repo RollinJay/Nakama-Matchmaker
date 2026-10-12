@@ -126,9 +126,14 @@ QString ServerConfig::path() const {
 	return QDir(m_folder).filePath(QStringLiteral("servers.json"));
 }
 
+bool ServerConfig::changedOnDisk() const {
+	return QFileInfo(path()).lastModified() != m_stamp;
+}
+
 bool ServerConfig::load(QString* error) {
 	m_servers.clear();
 	m_filled = false;
+	m_stamp = QFileInfo(path()).lastModified();
 	QFile file(path());
 	if (!file.exists()) {
 		return true;
@@ -243,7 +248,9 @@ bool ServerConfig::save(QString* error) const {
 		{ QStringLiteral("servers"), servers },
 	};
 	QDir().mkpath(m_folder);
-	return writePrivate(path(), QJsonDocument(root).toJson(), error);
+	bool ok = writePrivate(path(), QJsonDocument(root).toJson(), error);
+	m_stamp = QFileInfo(path()).lastModified();
+	return ok;
 }
 
 const ServerProfile* ServerConfig::find(const QString& id) const {

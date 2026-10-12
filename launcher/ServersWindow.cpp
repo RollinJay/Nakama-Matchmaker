@@ -11,6 +11,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -279,15 +280,23 @@ ServersWindow::ServersWindow(ServerManager* manager, Settings* settings, QWidget
 	m_nakama->setText(m_manager->config().nakamaPath);
 	m_postgres->setText(m_manager->config().postgresPath);
 	auto savePrograms = [this]() {
+		QString nakama = m_nakama->text().trimmed();
+		QString postgres = m_postgres->text().trimmed();
 		ServerConfig& config = m_manager->config();
-		if (config.nakamaPath == m_nakama->text().trimmed() && config.postgresPath == m_postgres->text().trimmed()) {
+		if (config.nakamaPath == nakama && config.postgresPath == postgres) {
 			return;
 		}
-		config.nakamaPath = m_nakama->text().trimmed();
-		config.postgresPath = m_postgres->text().trimmed();
+		bool refreshed = refresh();
+		config.nakamaPath = nakama;
+		config.postgresPath = postgres;
+		m_nakama->setText(nakama);
+		m_postgres->setText(postgres);
 		QString error;
 		if (!config.save(&error)) {
 			QMessageBox::warning(this, windowTitle(), error);
+		}
+		if (refreshed && !m_dirty) {
+			reload(m_current);
 		}
 		updateState();
 	};
@@ -346,6 +355,32 @@ QLineEdit* ServersWindow::fileField(QWidget** row, bool folder) {
 	layout->addWidget(field, 1);
 	layout->addWidget(browse);
 	return field;
+}
+
+bool ServersWindow::refresh() {
+	ServerConfig& config = m_manager->config();
+	if (!config.changedOnDisk()) {
+		return false;
+	}
+	QString error;
+	if (!config.load(&error)) {
+		QMessageBox::warning(this, windowTitle(), error);
+		return false;
+	}
+	if (config.filledSecrets()) {
+		config.save(&error);
+	}
+	m_nakama->setText(config.nakamaPath);
+	m_postgres->setText(config.postgresPath);
+	return true;
+}
+
+void ServersWindow::changeEvent(QEvent* event) {
+	QWidget::changeEvent(event);
+	if (event->type() == QEvent::ActivationChange && isActiveWindow() && !m_dirty && m_manager->config().changedOnDisk()) {
+		refresh();
+		reload(m_current);
+	}
 }
 
 void ServersWindow::closeEvent(QCloseEvent* event) {
@@ -533,6 +568,13 @@ bool ServersWindow::save() {
 	if (p.title.isEmpty()) {
 		p.title = p.id;
 	}
+	bool refreshed = refresh();
+	if (!m_manager->config().find(p.id)) {
+		m_formError->setText(tr("Another program removed the server %1.").arg(p.id));
+		m_dirty = false;
+		reload();
+		return false;
+	}
 	if (!p.managedDatabase() && m_external->isChecked() && p.database.isEmpty()) {
 		m_formError->setText(tr("Enter the database's address, or let the server have its own."));
 		return false;
@@ -554,6 +596,11 @@ bool ServersWindow::save() {
 	QStringList conflicts = config.conflicts(p);
 	m_formError->setText(conflicts.isEmpty() ? QString() : tr("Saved. It shares ports or its folder with %1: they cannot run at the same time.").arg(conflicts.join(QStringLiteral(", "))));
 	m_title->setText(p.title);
+	if (refreshed) {
+		QString note = m_formError->text();
+		reload(p.id);   // the servers another program added or changed
+		m_formError->setText(note);
+	}
 	updateItem(p.id);
 	updateState();
 	return true;
@@ -579,6 +626,7 @@ void ServersWindow::add() {
 	if (!settle()) {
 		return;
 	}
+	refresh();
 	QDialog dialog(this);
 	dialog.setWindowTitle(tr("New server"));
 	QFormLayout* form = new QFormLayout(&dialog);
@@ -631,6 +679,12 @@ void ServersWindow::add() {
 	if (ds->isChecked()) {
 		chosen.append(QStringLiteral("melonds"));
 	}
+	refresh();
+	if (config.find(id->text().trimmed())) {
+		QMessageBox::warning(this, windowTitle(), tr("There already is a server %1.").arg(id->text().trimmed()));
+		reload();
+		return;
+	}
 	ServerProfile p = config.create(id->text().trimmed(), chosen);
 	if (!title->text().trimmed().isEmpty()) {
 		p.title = title->text().trimmed();
@@ -656,12 +710,15 @@ void ServersWindow::remove() {
 	if (box.exec() != QMessageBox::Yes) {
 		return;
 	}
+	refresh();
 	m_manager->config().remove(id);
 	QString error;
 	if (!m_manager->config().save(&error)) {
 		QMessageBox::warning(this, windowTitle(), error);
 	}
-	if (deleteData->isChecked()) {
+	if (deleteData->isChecked() && ServerHost::runningElsewhere(data)) {
+		QMessageBox::information(this, windowTitle(), tr("The server runs in another program, so its folder was left alone."));
+	} else if (deleteData->isChecked()) {
 		if (QFileInfo::exists(QDir(data).filePath(ServerHost::markerName()))) {
 			QDir(data).removeRecursively();
 		} else if (QFileInfo::exists(data)) {

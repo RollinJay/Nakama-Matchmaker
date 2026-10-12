@@ -178,8 +178,9 @@ Tested on Ubuntu 24.04 with Nakama 3.41.0 and PostgreSQL 16, with every program 
 
 - servers for each kind, and for several kinds, started from the window and from both command-line programs, several at once; each server answered with its own community name and kinds, and offered only its kinds' RPCs;
 - on a GBA and IKEMEN GO server: two and three `netplay-online-test` players matched, connected and chatted; two launchers with `--auto` matched and played an mGBA fork match (`mgba-netplay-online-test`) to identical per-frame checksums;
+- on an IKEMEN GO server: the IKEMEN GO fork's 34 live Nakama tests (its client code against the server: sign-in and names, quick and ranked matchmaking with ratings, lobbies and tournaments, sessions and direct connections, watching matches) passed, with the Nakama settings those tests ask for given through `--nakama-arg`;
 - on a DS server: clients speaking the melonDS fork's channel protocol joined a channel, were paired by quick match, and had their connection signals relayed to their partner only;
 - stopping with Ctrl+C, SIGTERM and the window; recovering a Nakama and a database left running; a stop while the database is being created; refusing folders that are not the server's;
 - the database role's rights, and the refusal of players' writes to the server's records.
 
-Not tested: Windows and macOS (their code paths are written but have not run), IKEMEN GO and the melonDS fork's own window against a community server, TLS, and players on different networks.
+Not tested: Windows and macOS (their code paths are written but have not run), the IKEMEN GO game and the melonDS fork's online window themselves against a community server, TLS, and players on different networks.

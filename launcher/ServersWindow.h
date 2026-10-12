@@ -34,6 +34,7 @@ public:
 
 protected:
 	void closeEvent(QCloseEvent*) override;
+	void changeEvent(QEvent*) override;
 
 private:
 	void reload(const QString& select = QString());
@@ -49,6 +50,9 @@ private:
 	void useInLauncher();
 	void writeIkemenProfile();
 	void markDirty();
+	/* Reads servers.json again when another program changed it, so that a change made here
+	 * does not undo theirs. */
+	bool refresh();
 	QLineEdit* fileField(QWidget** row, bool folder);
 
 	ServerManager* m_manager;

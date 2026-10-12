@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QList>
 #include <QPair>
 #include <QString>
@@ -65,6 +66,9 @@ public:
 	bool load(QString* error);
 	bool save(QString* error) const;
 	bool filledSecrets() const { return m_filled; }
+	/* Whether another program (the command line, another window) changed servers.json
+	 * since it was read or written here. */
+	bool changedOnDisk() const;
 
 	QString nakamaPath;     // Nakama's executable; empty: next to this program, then PATH
 	QString postgresPath;   // the folder of PostgreSQL's programs; empty: searched
@@ -103,4 +107,5 @@ private:
 	QString m_folder;
 	QList<ServerProfile> m_servers;
 	bool m_filled = false;
+	mutable QDateTime m_stamp;   // servers.json's time when last read or written here
 };
