@@ -31,7 +31,7 @@ struct Game {
 	QStringList identityCommand;   // optional: prints the identity; {profile} is replaced
 
 	QString kindLabel() const;
-	bool matchesInLauncher() const { return kind == QLatin1String("mgba") || kind == QLatin1String("melonds"); }
+	bool matchesInLauncher() const { return kind == QLatin1String("mgba"); }
 };
 
 class GameCatalog {

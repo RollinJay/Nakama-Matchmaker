@@ -2,8 +2,7 @@
 #include "Settings.h"
 
 #include <QDir>
-
-#include <random>
+#include <QRandomGenerator>
 
 Settings::Settings(const QString& folder)
 	: m_folder(folder) {
@@ -38,10 +37,11 @@ void Settings::setName(const QString& name) {
 QString Settings::deviceId() {
 	QString id = m_settings->value(QStringLiteral("player/device")).toString();
 	if (id.size() < 10) {
-		std::random_device device;
+		// the account's only credential: from the system's secure generator (std::random_device
+		// is not random with some MinGW compilers)
 		QByteArray raw(16, Qt::Uninitialized);
 		for (int i = 0; i < raw.size(); ++i) {
-			raw[i] = char(device() & 0xFF);
+			raw[i] = char(QRandomGenerator::system()->bounded(256));
 		}
 		id = QString::fromLatin1(raw.toHex());
 		m_settings->setValue(QStringLiteral("player/device"), id);

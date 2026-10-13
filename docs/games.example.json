@@ -9,11 +9,10 @@
       "players": 2
     },
     {
-      "id": "bleach-ds2",
-      "title": "Bleach: Dark Souls (2 DS)",
+      "id": "bleach-ds",
+      "title": "Bleach: Dark Souls (DS)",
       "kind": "melonds",
-      "profile": "/home/me/melonDS/tools/netplay/profiles/bleach-ds2-vs.ini",
-      "players": 2
+      "profile": "/home/me/roms/bleach-dark-souls.nds"
     },
     {
       "id": "ikemen",

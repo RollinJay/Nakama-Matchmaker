@@ -28,12 +28,22 @@ class LauncherCore : public QObject {
 public:
 	enum class State { SignedOut, SigningIn, Online, Matchmaking, Playing };
 
+	/* What a community server that Nakama Matchmaker runs says about itself (its
+	 * community_info RPC, docs/hosting.md); empty for other servers. */
+	struct Community {
+		QString title;
+		QString message;
+		QStringList kinds;
+		QString kindsLabel() const;
+	};
+
 	LauncherCore(Settings*, GameCatalog*, QObject* parent = nullptr);
 	~LauncherCore() override;
 
 	State state() const { return m_state; }
 	NetplayOnline::NakamaClient* client() const { return m_client.get(); }
 	QString userId() const;
+	const Community& community() const { return m_community; }
 
 	void signIn();
 	void signOut();
@@ -43,7 +53,7 @@ public:
 	void sendChat(const QString& text);
 	void findMatch(const QString& gameId);
 	void cancelMatch();
-	void play(const QString& gameId);   // without a match: offline, or IKEMEN GO's own online menus
+	void play(const QString& gameId, bool quickMatch = false);   // without a launcher match: offline, or the game's own online menus (quickMatch: melonDS online)
 
 signals:
 	void stateChanged(LauncherCore::State);
@@ -52,6 +62,7 @@ signals:
 	void membersChanged();
 	void gameStarted(const QString& gameId);
 	void gameFinished(const QString& gameId, int exitCode);
+	void communityChanged();
 
 private:
 	void setState(State);
@@ -73,6 +84,7 @@ private:
 	std::unique_ptr<QProcess> m_process;
 	std::unique_ptr<QTemporaryDir> m_handoff;
 	QTimer m_ping;
+	Community m_community;
 };
 
 Q_DECLARE_METATYPE(LauncherCore::State)

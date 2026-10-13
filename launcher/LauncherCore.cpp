@@ -44,6 +44,16 @@ void LauncherCore::setState(State state) {
 	}
 }
 
+QString LauncherCore::Community::kindsLabel() const {
+	QStringList labels;
+	for (const QString& kind : kinds) {
+		Game g;
+		g.kind = kind;
+		labels.append(g.kindLabel());
+	}
+	return labels.join(QStringLiteral(", "));
+}
+
 QString LauncherCore::userId() const {
 	return m_client ? m_client->session().userId : QString();
 }
@@ -85,6 +95,31 @@ void LauncherCore::signIn() {
 	});
 	connect(client, &NakamaClient::socketOpened, this, [this, client]() {
 		emit status(tr("Online as %1.").arg(client->session().username));
+		// a community server says which community it is for; other servers have no such RPC
+		client->rpc(QStringLiteral("community_info"), QJsonObject(), [this, client](bool ok, const QByteArray& reply, const QString&) {
+			if (client != m_client.get()) {
+				return;
+			}
+			if (!ok) {
+				// not a community server: nothing of an earlier one stays
+				if (!m_community.title.isEmpty() || !m_community.kinds.isEmpty()) {
+					m_community = Community();
+					emit communityChanged();
+				}
+				return;
+			}
+			QJsonObject o = QJsonDocument::fromJson(reply).object();
+			m_community.title = o.value(QStringLiteral("title")).toString().left(64);
+			m_community.message = o.value(QStringLiteral("message")).toString().left(500);
+			m_community.kinds.clear();
+			for (const QJsonValue& v : o.value(QStringLiteral("kinds")).toArray()) {
+				m_community.kinds.append(v.toString());
+			}
+			if (!m_community.title.isEmpty() && m_state != State::SignedOut) {
+				emit status(tr("Online as %1 on %2.").arg(client->session().username, m_community.title));
+			}
+			emit communityChanged();
+		});
 		m_ping.start();
 		client->ping();
 		if (!m_roomGame.isEmpty()) {
@@ -97,6 +132,10 @@ void LauncherCore::signIn() {
 	connect(client, &NakamaClient::socketClosed, this, [this](const QString& reason) {
 		emit status(tr("Disconnected: %1").arg(reason));
 		m_ping.stop();
+		if (!m_community.title.isEmpty() || !m_community.kinds.isEmpty()) {
+			m_community = Community();
+			emit communityChanged();
+		}
 		m_members.clear();
 		emit membersChanged();
 		if (m_state != State::Playing) {
@@ -153,6 +192,10 @@ void LauncherCore::signOut() {
 	m_members.clear();
 	m_roomChannel.clear();
 	emit membersChanged();
+	if (!m_community.title.isEmpty() || !m_community.kinds.isEmpty()) {
+		m_community = Community();
+		emit communityChanged();
+	}
 	if (m_state != State::Playing) {
 		setState(State::SignedOut);
 	}
@@ -194,7 +237,7 @@ void LauncherCore::findMatch(const QString& gameId) {
 		return;
 	}
 	if (!game->matchesInLauncher()) {
-		play(gameId);
+		play(gameId, true);
 		return;
 	}
 	QString error;
@@ -320,7 +363,7 @@ bool LauncherCore::launch(const Game& game, const QProcessEnvironment& env, QStr
 	return true;
 }
 
-void LauncherCore::play(const QString& gameId) {
+void LauncherCore::play(const QString& gameId, bool quickMatch) {
 	const Game* game = m_catalog->find(gameId);
 	if (!game) {
 		return;
@@ -328,9 +371,11 @@ void LauncherCore::play(const QString& gameId) {
 	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
 	env.remove(QStringLiteral("NETPLAY_CONNECT"));
 	Game started = *game;
-	if (game->kind == QLatin1String("ikemen")) {
-		// IKEMEN GO signs in with the launcher's server and account, and its own online
-		// menus (quick match, lobbies) make the matches
+	bool melonds = game->kind == QLatin1String("melonds");
+	if (game->kind == QLatin1String("ikemen") || (melonds && quickMatch)) {
+		// IKEMEN GO and melonDS sign in with the launcher's server and account, and their
+		// own online menus make the matches: IKEMEN GO's quick match and lobbies, melonDS's
+		// game channel (the server's melonds module), where it asks for a quick match
 		m_handoff.reset(new QTemporaryDir);
 		QString path = m_handoff->filePath(QStringLiteral("servers.json"));
 		NetplayOnline::ServerConfig server = m_settings->server();
@@ -355,16 +400,25 @@ void LauncherCore::play(const QString& gameId) {
 		};
 		QFile file(path);
 		if (!file.open(QIODevice::WriteOnly)) {
-			emit status(tr("Cannot write IKEMEN GO's server profile: %1").arg(file.errorString()));
+			emit status(tr("Cannot write the game's server profile: %1").arg(file.errorString()));
 			return;
 		}
 		file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
 		file.write(QJsonDocument(root).toJson());
 		file.close();
-		started.args = QStringList { QStringLiteral("-nakama-config"), path, QStringLiteral("-nakama-server"), QStringLiteral("launcher") } + game->args;
-		if (started.workdir.isEmpty()) {
+		if (melonds) {
+			// melonDS quits when the online session ends, and the launcher is back
+			started.args = QStringList { QStringLiteral("--netplay-config"), path, QStringLiteral("--netplay-online"),
+			                             QStringLiteral("--netplay-quick"), QStringLiteral("--netplay-exit") } + game->args;
+		} else {
+			started.args = QStringList { QStringLiteral("-nakama-config"), path, QStringLiteral("-nakama-server"), QStringLiteral("launcher") } + game->args;
+		}
+		if (game->kind == QLatin1String("ikemen") && started.workdir.isEmpty()) {
 			started.workdir = QFileInfo(m_settings->ikemenPath()).absolutePath();
 		}
+	}
+	if (melonds && !game->profile.isEmpty()) {
+		started.args << game->profile;   // the ROM
 	}
 	QString error;
 	if (!launch(started, env, &error)) {
