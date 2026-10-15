@@ -27,6 +27,7 @@ private:
 	QLineEdit* m_profile;
 	QLabel* m_profileLabel;
 	QSpinBox* m_players;
+	int m_mgbaPlayers = 2;   // the players of an mgba game, kept while another kind is chosen
 	QLineEdit* m_ikemenGame;
 	QLineEdit* m_ikemenBuild;
 	QLineEdit* m_args;

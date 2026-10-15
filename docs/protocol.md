@@ -1,8 +1,8 @@
 # Protocol
 
-This document describes what the launcher and the emulators exchange with the Nakama server and with each other. netplay-online implements all of it: `NakamaClient` (server), `MatchSession` (one match), `PeerLinks` (direct connections) and `GekkoAdapter` (game packets).
+This document describes what the launcher and the emulators exchange with the Nakama server and with each other. netplay-online implements all of it for the launcher and the mGBA fork: `NakamaClient` (server), `MatchSession` (one match), `PeerLinks` (direct connections) and `GekkoAdapter` (game packets). The melonDS fork implements the same device sign-in, matchmaking, match messages and direct connections with code of its own; its game packets differ ([Game packets](#game-packets)).
 
-The server side is plain Nakama plus the IKEMEN GO fork's server modules ([server.md](server.md)); nothing here needs server code of its own, except the optional `community_info` of [Community servers](#community-servers).
+The server side is plain Nakama plus the IKEMEN GO fork's server modules ([server.md](server.md)); nothing here needs server code of its own, except the optional `community_info` of [Community servers](#community-servers). The melonDS fork's game channels are a server module of their own ([melonDS's game channels](#melondss-game-channels)).
 
 ## Accounts
 
@@ -26,11 +26,12 @@ Each game has a chat room: a Nakama room channel (`channel_join`, type 1, persis
 
 | Game kind | Room name |
 |---|---|
-| `mgba` | the kind, `.`, and the first 24 digits of the profile's identity, e.g. `mgba.12ea7bc41c53d6468b943e26` |
-| `melonds` | `game.<id>`: DS players meet in melonDS's own game channel, not in this room |
+| `mgba`, `melonds` | the kind, `.`, and the first 24 digits of the game's identity, e.g. `mgba.12ea7bc41c53d6468b943e26` |
 | `ikemen` | `ikemen.<game>.<build>` |
 
 Room names are cut to 64 characters, Nakama's limit. A launcher that cannot compute an identity uses `game.<id>` until it can. Chat messages are `channel_message_send` with the content `{"text": "..."}`, at most 200 characters.
+
+These rooms are the launcher's. The melonDS fork's online window has game channels of its own instead ([melonDS's game channels](#melondss-game-channels)), which the launcher does not join.
 
 ## Matchmaking
 
@@ -38,25 +39,31 @@ A player looking for a match adds a matchmaker ticket (`matchmaker_add`) with th
 
 | Property | Value |
 |---|---|
-| `game` | the profile's identity |
+| `game` | the game's identity |
 | `kind` | `mgba` or `melonds` |
 | `mode` | `unranked` |
-| `players` | the number of players per match, as text |
+| `players` | the number of players per match, as text (`2` for `melonds`) |
 
-and this query, with `min_count` and `max_count` both equal to the number of players:
+no numeric properties, and this query, with `min_count` and `max_count` both equal to the number of players and `count_multiple` 1:
 
 ```
 +properties.game:<identity> +properties.kind:<kind> +properties.mode:unranked +properties.players:<n>
 ```
 
-The launcher and the emulators' own "Find a match" use the same properties and query, so a player in the launcher and a player in an emulator's netplay window find each other.
+The launcher, the mGBA fork's netplay window ("Find a match") and the melonDS fork's quick match add exactly this ticket, so a player in the launcher and a player in an emulator's own window find each other. For a DS game the ticket is always:
+
+```
++properties.game:<identity> +properties.kind:melonds +properties.mode:unranked +properties.players:2
+```
+
+with `min_count` = `max_count` = 2.
 
 When the matchmaker pairs the players (`matchmaker_matched`), the IKEMEN GO fork's matchmaker hook decides what kind of match they get:
 
 - **two players**: the hook creates an authoritative `ikemen_session` match, and every player receives its `match_id`;
 - **three or four players**: the hook returns nothing, and every player receives a matchmaker `token` for a relayed match.
 
-Either way, each player joins with `match_join` (by id or by token). The users in `matchmaker_matched` come in the same order for every player, and that order is the player order: the first user is player 1.
+A server without these modules, such as a DS community server ([hosting.md](hosting.md)), has no hook: every player receives a `token`. Either way, each player joins with `match_join` (by id or by token). The users in `matchmaker_matched` come in the same order for every player, and that order is the player order: the first user is player 1.
 
 ## Messages inside a match
 
@@ -65,10 +72,10 @@ The players send each other JSON messages through the match (`match_data_send`).
 | Op code | Name | Content |
 |---|---|---|
 | `0x494B5347` | signal | address candidates for the direct connections (below) |
-| `0x4E504845` | hello | `{"player": 0, "name": "Ryu", "identity": "<40 digits>", "kind": "mgba"}`, sent once after joining |
+| `0x4E504845` | hello | `{"player": 0, "name": "Ryu", "identity": "<40 digits>", "kind": "mgba"}`, sent after joining |
 | `0x4E504348` | chat | `{"text": "..."}`, at most 200 characters |
 
-A player whose hello carries another identity ends the match on the receiving side, with a message that the players' setups differ. The signal op code is the IKEMEN GO fork's (`IKSG`); hello and chat are this project's (`NPHE`, `NPCH`).
+A player whose hello carries another identity ends the match on the receiving side, with a message that the players' setups differ; the melonDS fork also refuses a hello of another `kind` than `melonds`. A match does not keep messages for players who join later, so the melonDS fork sends its hello again whenever another player joins the match. Its players chat over their direct connection instead of the chat message. The signal op code is the IKEMEN GO fork's (`IKSG`); hello and chat are this project's (`NPHE`, `NPCH`).
 
 ## Direct connections
 
@@ -105,13 +112,23 @@ A player that receives a hello answers it three times with the same packet of ki
 | First byte | Carries |
 |---|---|
 | `0xA0` | control: `0x01` keepalive, `0x02` goodbye, `0x03` ping followed by 8 bytes (microseconds, little-endian), `0x04` pong echoing those 8 bytes |
-| `0xA1` | reserved: the IKEMEN GO fork's reliable stream, which these clients do not use |
+| `0xA1` | a reliable stream (KCP): the IKEMEN GO fork's, and the melonDS fork's session messages; netplay-online does not use it |
 | `0xA2` | a game packet |
 
 Each player pings every other player every second, which gives the round trip, and sends a keepalive when it has sent nothing to a player for 2 seconds. A player that sends a goodbye, or is silent for 8 seconds after connecting, is lost. Closing sends the goodbye three times.
 
-**Game packets.** The emulators run [GekkoNet](https://github.com/HeatXD/GekkoNet) sessions, whose network adapter sends GekkoNet's packets as game packets; GekkoNet addresses a player by its Nakama user id, and netplay-online maps that id to the player's connection.
+### Game packets
+
+netplay-online runs [GekkoNet](https://github.com/HeatXD/GekkoNet) sessions (the mGBA fork), whose network adapter sends GekkoNet's packets as game packets; GekkoNet addresses a player by its Nakama user id, and netplay-online maps that id to the player's connection.
+
+The melonDS fork runs its own rollback session (GGPO) on the connection: its game packets are GGPO's, and its session messages (the ROM and save checks, settings, desync checks, chat) go in the reliable stream (its `docs/NETPLAY.md`, "Wire formats"). The player who is first in the matchmaker's order hosts that session.
+
+## melonDS's game channels
+
+The melonDS fork's online window gathers the players of each game in a *game channel*: an authoritative match of the fork's channel module (`melonds_channel.lua`, in `server/modules/melonds`), which a client finds or creates with the RPC `melonds_channel_join` and lists with `melonds_channels`. The channel shows who is there and whether they are looking for a game, carries their chat, and pairs two players when one challenges the other and the other accepts; it then relays the pair's connection signals (the signal above) to the pair only. It runs no emulation and sees none of the game's traffic.
+
+A player whose quick match is searching shows as looking in the channel; the search itself is the matchmaker ticket above, not the channel's. The module still has its own quick match (its `QUEUE` message) for older versions of the fork; current versions do not use it.
 
 ## Compatibility with IKEMEN GO
 
-The signal, the handshake and the datagram tags are those of the IKEMEN GO Nakama fork's P2P layer (IKEMEN-P2P/1), extended from one peer to several on the same socket. The game packets differ (IKEMEN GO's rollback packets against GekkoNet's), so an emulator and IKEMEN GO cannot play each other; they share the server, the accounts, the rooms and the matchmaker.
+The signal, the handshake and the datagram tags are those of the IKEMEN GO Nakama fork's P2P layer (IKEMEN-P2P/1), which netplay-online extends from one peer to several on the same socket. The game packets differ (IKEMEN GO's rollback packets, GekkoNet's and the melonDS fork's), so the emulators and IKEMEN GO cannot play each other; they share the server, the accounts, the rooms and the matchmaker.

@@ -14,14 +14,15 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QTabWidget;
+class RankedPanel;
 class ServerManager;
 class Settings;
 struct ServerProfile;
 
 /* The community servers in a window: the servers on the left; for the chosen one, its
- * state, the buttons that start and stop it, its settings, its log and what players
- * enter; and the programs every server uses. Servers go on running when the window is
- * closed. */
+ * state, the buttons that start and stop it, its settings, its log, what players enter,
+ * and for a server with IKEMEN GO its ranked sets (RankedPanel); and the programs every
+ * server uses. Servers go on running when the window is closed. */
 class ServersWindow : public QWidget {
 	Q_OBJECT
 
@@ -54,6 +55,8 @@ private:
 	 * does not undo theirs. */
 	bool refresh();
 	QLineEdit* fileField(QWidget** row, bool folder);
+	/* The Ranked tab is there for a server that serves IKEMEN GO. */
+	void updateRankedTab(const ServerProfile*);
 
 	ServerManager* m_manager;
 	Settings* m_settings;
@@ -95,6 +98,7 @@ private:
 	QLineEdit* m_extraModules = nullptr;
 	QLabel* m_formError = nullptr;
 	QPlainTextEdit* m_log = nullptr;
+	RankedPanel* m_ranked = nullptr;
 	QLabel* m_connect = nullptr;
 	QLineEdit* m_nakama = nullptr;
 	QLineEdit* m_postgres = nullptr;

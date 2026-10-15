@@ -1,6 +1,8 @@
 # The community servers (docs/hosting.md): Qt Core and Network only, shared by the launcher
 # and nakama-matchmaker-server
 add_library(nakama-matchmaker-servers STATIC
+	RankedSets.cpp
+	RankedSets.h
 	ServerCli.cpp
 	ServerCli.h
 	ServerConfig.cpp
@@ -38,6 +40,8 @@ if(BUILD_LAUNCHER)
 		LauncherCore.h
 		LauncherWindow.cpp
 		LauncherWindow.h
+		RankedPanel.cpp
+		RankedPanel.h
 		ServersWindow.cpp
 		ServersWindow.h
 		Settings.cpp

@@ -64,6 +64,9 @@ bool GameCatalog::load(QString* error) {
 		g.kind = o.value(QStringLiteral("kind")).toString();
 		g.profile = o.value(QStringLiteral("profile")).toString();
 		g.players = o.value(QStringLiteral("players")).toInt(2);
+		if (g.kind == QLatin1String("melonds")) {
+			g.players = 2;   // the melonDS fork plays two players online
+		}
 		g.ikemenGame = o.value(QStringLiteral("game")).toString();
 		g.ikemenBuild = o.value(QStringLiteral("build")).toString();
 		g.workdir = o.value(QStringLiteral("workdir")).toString();
@@ -88,7 +91,7 @@ bool GameCatalog::save(QString* error) const {
 		if (!g.profile.isEmpty()) {
 			o.insert(QStringLiteral("profile"), g.profile);
 		}
-		if (g.matchesInLauncher()) {
+		if (g.kind == QLatin1String("mgba")) {
 			o.insert(QStringLiteral("players"), g.players);
 		}
 		if (!g.ikemenGame.isEmpty()) {
@@ -182,7 +185,8 @@ QString GameCatalog::identity(const Game& game, Settings* settings, QString* err
 	QString out = QString::fromLatin1(process.readAllStandardOutput()).trimmed().section(QLatin1Char('\n'), -1).trimmed();
 	if (process.exitCode() != 0 || out.size() != 40) {
 		QString err = QString::fromLocal8Bit(process.readAllStandardError()).trimmed();
-		*error = err.isEmpty() ? QStringLiteral("%1 could not read the profile %2").arg(command.first(), game.profile) : err;
+		QString what = game.kind == QLatin1String("melonds") ? QStringLiteral("the ROM") : QStringLiteral("the profile");
+		*error = err.isEmpty() ? QStringLiteral("%1 could not read %2 %3").arg(command.first(), what, game.profile) : err;
 		return QString();
 	}
 	m_identities.insert(stamp, out);

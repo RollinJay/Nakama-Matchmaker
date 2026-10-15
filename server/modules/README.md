@@ -8,8 +8,8 @@ path:
 | Folder | Installed for | What it is | Source | License |
 |---|---|---|---|---|
 | `community/` | every server | `community.lua`: the `community_info` RPC, and the refusal of players' writes to the server's own storage collections | this repository | MIT |
-| `ikemen/` | IKEMEN GO and GBA servers | IKEMEN GO's matchmaking, sessions, lobbies, ratings and online names; GBA games' two-player matches are its sessions | [RollinJay/IkemenGo-Nakama](https://github.com/RollinJay/IkemenGo-Nakama) `nakama/modules/`, commit 67f1872 | MIT (`ikemen/LICENSE`) |
-| `melonds/` | DS servers | `melonds_channel.lua`: the melonDS fork's game channels (chat, challenges, quick match) | [RollinJay/melonDS-test](https://github.com/RollinJay/melonDS-test) `src/net/rollback/server/` (the rollback netplay commit) | MIT (`melonds/LICENSE`) |
+| `ikemen/` | IKEMEN GO and GBA servers | IKEMEN GO's matchmaking, sessions, lobbies, ratings and online names, and its ranked sets with their replays and moderator RPCs; GBA games' two-player matches are its sessions | [RollinJay/IkemenGo-Nakama](https://github.com/RollinJay/IkemenGo-Nakama) `nakama/modules/`, commit 0cbf961 | MIT (`ikemen/LICENSE`) |
+| `melonds/` | DS servers | `melonds_channel.lua`: the melonDS fork's game channels (who is there, chat, challenges) | [RollinJay/melonDS-test](https://github.com/RollinJay/melonDS-test) `src/net/rollback/server/`, commit 1a627f0 | MIT (`melonds/LICENSE`) |
 
 The `ikemen/` and `melonds/` files are copies, unchanged, of their sources. When those
 change, `tools/sync-server-modules.sh` copies them again from checkouts of the two forks.

@@ -35,6 +35,9 @@ LauncherCore::~LauncherCore() {
 	if (m_client) {
 		m_client->disconnect(this);
 	}
+	if (m_fresh) {
+		m_fresh->disconnect(this);
+	}
 }
 
 void LauncherCore::setState(State state) {
@@ -184,6 +187,7 @@ void LauncherCore::signIn() {
 
 void LauncherCore::signOut() {
 	m_ping.stop();
+	m_fresh.reset();
 	if (m_client) {
 		m_client->disconnect(this);
 		m_client->disconnectSocket();
@@ -237,7 +241,7 @@ void LauncherCore::findMatch(const QString& gameId) {
 		return;
 	}
 	if (!game->matchesInLauncher()) {
-		play(gameId, true);
+		playOnline(gameId);   // IKEMEN GO makes its own matches
 		return;
 	}
 	QString error;
@@ -265,6 +269,7 @@ void LauncherCore::findMatch(const QString& gameId) {
 
 void LauncherCore::cancelMatch() {
 	if (m_state == State::Matchmaking && m_client) {
+		m_fresh.reset();   // a match found, but not started yet: it is not
 		m_client->cancelMatchmaking();
 		setState(State::Online);
 		emit status(tr("Matchmaking cancelled."));
@@ -272,14 +277,39 @@ void LauncherCore::cancelMatch() {
 }
 
 void LauncherCore::onMatched(const Matched& matched) {
-	const Game* game = m_catalog->find(m_matchGame);
-	if (!game || m_state != State::Matchmaking) {
+	if (!m_catalog->find(m_matchGame) || m_state != State::Matchmaking || m_fresh) {
 		return;
+	}
+	// The emulator plays as this account, with a session of the account that it refreshes
+	// itself. The launcher's own session can be older than its refresh token, which expires
+	// an hour after the session began on Nakama's default settings, and the emulator could
+	// not refresh it: the launcher signs in again for a new session.
+	m_fresh.reset(new NakamaClient(m_settings->server()));
+	NakamaClient* fresh = m_fresh.get();
+	connect(fresh, &NakamaClient::signedIn, this, [this, fresh, matched]() {
+		Session session = fresh->session();
+		m_fresh.release()->deleteLater();
+		startMatch(matched, session);
+	});
+	connect(fresh, &NakamaClient::failed, this, [this, matched](const QString& error) {
+		m_fresh.release()->deleteLater();
+		if (m_client) {
+			emit status(tr("Cannot sign in again for the game (%1); it gets the launcher's session.").arg(error));
+			startMatch(matched, m_client->session());
+		}
+	});
+	fresh->authenticateDevice(m_settings->deviceId());
+}
+
+void LauncherCore::startMatch(const Matched& matched, const Session& session) {
+	const Game* game = m_catalog->find(m_matchGame);
+	if (!game || !m_client || m_state != State::Matchmaking) {
+		return;   // cancelled, or signed out, meanwhile
 	}
 	ConnectInfo info;
 	info.server = m_settings->server();
-	info.token = m_client->session().token;
-	info.refreshToken = m_client->session().refreshToken;
+	info.token = session.token;
+	info.refreshToken = session.refreshToken;
 	info.matchId = matched.matchId;
 	info.matchToken = matched.token;
 	for (const MatchedUser& u : matched.users) {
@@ -290,11 +320,11 @@ void LauncherCore::onMatched(const Matched& matched) {
 	info.profile = game->profile;
 	info.identity = m_matchIdentity;
 	info.stunServers = m_settings->stunServers();
-	m_handoff.reset(new QTemporaryDir);
-	QString path = m_handoff->filePath(QStringLiteral("match.json"));
+	std::unique_ptr<QTemporaryDir> handoff(new QTemporaryDir);
+	QString path = handoff->filePath(QStringLiteral("match.json"));
 	QString error;
-	if (!info.write(path, &error)) {
-		emit status(tr("Cannot write the match for the emulator: %1").arg(error));
+	if (!handoff->isValid() || !info.write(path, &error)) {
+		emit status(tr("Cannot write the match for the emulator: %1").arg(handoff->isValid() ? error : handoff->errorString()));
 		setState(State::Online);
 		return;
 	}
@@ -305,7 +335,8 @@ void LauncherCore::onMatched(const Matched& matched) {
 		names.append(p.name);
 	}
 	emit status(tr("Match found: %1. Starting %2...").arg(names.join(QStringLiteral(" vs ")), game->title));
-	if (!launch(*game, env, &error)) {
+	// the emulator loads the profile, or for melonDS the ROM, that the file names
+	if (!launch(*game, env, std::move(handoff), &error)) {
 		emit status(error);
 		setState(State::Online);
 	}
@@ -330,7 +361,7 @@ QStringList LauncherCore::programFor(const Game& game, QString* error) const {
 	return QStringList { program } + game.args;
 }
 
-bool LauncherCore::launch(const Game& game, const QProcessEnvironment& env, QString* error) {
+bool LauncherCore::launch(const Game& game, const QProcessEnvironment& env, std::unique_ptr<QTemporaryDir> handoff, QString* error) {
 	if (m_process && m_process->state() != QProcess::NotRunning) {
 		*error = tr("A game is already running.");
 		return false;
@@ -339,6 +370,7 @@ bool LauncherCore::launch(const Game& game, const QProcessEnvironment& env, QStr
 	if (command.isEmpty()) {
 		return false;
 	}
+	m_handoff = std::move(handoff);
 	m_process.reset(new QProcess);
 	m_process->setProcessEnvironment(env);
 	m_process->setProcessChannelMode(QProcess::ForwardedChannels);
@@ -356,6 +388,7 @@ bool LauncherCore::launch(const Game& game, const QProcessEnvironment& env, QStr
 	m_process->start(command.first(), command.mid(1));
 	if (!m_process->waitForStarted(10000)) {
 		*error = tr("Cannot start %1: %2").arg(command.first(), m_process->errorString());
+		m_handoff.reset();
 		return false;
 	}
 	setState(State::Playing);
@@ -363,65 +396,100 @@ bool LauncherCore::launch(const Game& game, const QProcessEnvironment& env, QStr
 	return true;
 }
 
-void LauncherCore::play(const QString& gameId, bool quickMatch) {
+std::unique_ptr<QTemporaryDir> LauncherCore::writeServerProfile(const Game& game, QString* path, QString* error) const {
+	std::unique_ptr<QTemporaryDir> dir(new QTemporaryDir);
+	if (!dir->isValid()) {
+		*error = tr("Cannot write the game's server profile: %1").arg(dir->errorString());
+		return nullptr;
+	}
+	*path = dir->filePath(QStringLiteral("servers.json"));
+	NetplayOnline::ServerConfig server = m_settings->server();
+	QJsonObject profile {
+		{ QStringLiteral("id"), QStringLiteral("launcher") },
+		{ QStringLiteral("name"), QStringLiteral("Nakama Matchmaker") },
+		{ QStringLiteral("host"), server.host },
+		{ QStringLiteral("port"), server.port },
+		{ QStringLiteral("server_key"), server.serverKey },
+		{ QStringLiteral("ssl"), server.ssl },
+		{ QStringLiteral("status"), true },
+		{ QStringLiteral("device_id"), m_settings->deviceId() },
+		{ QStringLiteral("username"), m_settings->name() },
+		{ QStringLiteral("stun_servers"), QJsonArray::fromStringList(m_settings->stunServers()) },
+	};
+	if (game.kind == QLatin1String("ikemen")) {
+		profile.insert(QStringLiteral("game"), game.ikemenGame);
+		profile.insert(QStringLiteral("build"), game.ikemenBuild);
+	}
+	QJsonObject root {
+		{ QStringLiteral("version"), 1 },
+		{ QStringLiteral("default"), QStringLiteral("launcher") },
+		{ QStringLiteral("servers"), QJsonArray { profile } },
+	};
+	// the file holds the account's device id: only its owner may read it
+	QFile file(*path);
+	if (!file.open(QIODevice::WriteOnly) || !file.setPermissions(QFile::ReadOwner | QFile::WriteOwner) ||
+	    file.write(QJsonDocument(root).toJson()) < 0) {
+		*error = tr("Cannot write the game's server profile: %1").arg(file.errorString());
+		return nullptr;
+	}
+	file.close();
+	return dir;
+}
+
+void LauncherCore::play(const QString& gameId) {
 	const Game* game = m_catalog->find(gameId);
 	if (!game) {
+		return;
+	}
+	if (game->kind == QLatin1String("ikemen")) {
+		// IKEMEN GO always gets the launcher's server and account: it goes online, or not,
+		// from its own menus
+		playOnline(gameId);
 		return;
 	}
 	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
 	env.remove(QStringLiteral("NETPLAY_CONNECT"));
 	Game started = *game;
-	bool melonds = game->kind == QLatin1String("melonds");
-	if (game->kind == QLatin1String("ikemen") || (melonds && quickMatch)) {
-		// IKEMEN GO and melonDS sign in with the launcher's server and account, and their
-		// own online menus make the matches: IKEMEN GO's quick match and lobbies, melonDS's
-		// game channel (the server's melonds module), where it asks for a quick match
-		m_handoff.reset(new QTemporaryDir);
-		QString path = m_handoff->filePath(QStringLiteral("servers.json"));
-		NetplayOnline::ServerConfig server = m_settings->server();
-		QJsonObject profile {
-			{ QStringLiteral("id"), QStringLiteral("launcher") },
-			{ QStringLiteral("name"), QStringLiteral("Nakama Matchmaker") },
-			{ QStringLiteral("host"), server.host },
-			{ QStringLiteral("port"), server.port },
-			{ QStringLiteral("server_key"), server.serverKey },
-			{ QStringLiteral("ssl"), server.ssl },
-			{ QStringLiteral("status"), true },
-			{ QStringLiteral("device_id"), m_settings->deviceId() },
-			{ QStringLiteral("username"), m_settings->name() },
-			{ QStringLiteral("game"), game->ikemenGame },
-			{ QStringLiteral("build"), game->ikemenBuild },
-			{ QStringLiteral("stun_servers"), QJsonArray::fromStringList(m_settings->stunServers()) },
-		};
-		QJsonObject root {
-			{ QStringLiteral("version"), 1 },
-			{ QStringLiteral("default"), QStringLiteral("launcher") },
-			{ QStringLiteral("servers"), QJsonArray { profile } },
-		};
-		QFile file(path);
-		if (!file.open(QIODevice::WriteOnly)) {
-			emit status(tr("Cannot write the game's server profile: %1").arg(file.errorString()));
-			return;
+	if (game->kind == QLatin1String("melonds") && !game->profile.isEmpty()) {
+		started.args << game->profile;   // the ROM; an mGBA profile is for netplay only
+	}
+	QString error;
+	if (!launch(started, env, nullptr, &error)) {
+		emit status(error);
+	}
+}
+
+void LauncherCore::playOnline(const QString& gameId) {
+	const Game* game = m_catalog->find(gameId);
+	if (!game || !game->playsOnlineItself()) {
+		return;
+	}
+	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+	env.remove(QStringLiteral("NETPLAY_CONNECT"));
+	QString path;
+	QString error;
+	std::unique_ptr<QTemporaryDir> handoff = writeServerProfile(*game, &path, &error);
+	if (!handoff) {
+		emit status(error);
+		return;
+	}
+	Game started = *game;
+	if (game->kind == QLatin1String("melonds")) {
+		// melonDS opens its online window signed in as this account and joins the game's
+		// channel, where the player chats, challenges or asks for a quick match; it stays
+		// open for more games until the player closes it (docs/launch.md)
+		started.args = QStringList { QStringLiteral("--netplay-config"), path, QStringLiteral("--netplay-online") } + game->args;
+		if (!game->profile.isEmpty()) {
+			started.args << game->profile;   // the ROM
 		}
-		file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
-		file.write(QJsonDocument(root).toJson());
-		file.close();
-		if (melonds) {
-			// melonDS quits when the online session ends, and the launcher is back
-			started.args = QStringList { QStringLiteral("--netplay-config"), path, QStringLiteral("--netplay-online"),
-			                             QStringLiteral("--netplay-quick"), QStringLiteral("--netplay-exit") } + game->args;
-		} else {
-			started.args = QStringList { QStringLiteral("-nakama-config"), path, QStringLiteral("-nakama-server"), QStringLiteral("launcher") } + game->args;
-		}
-		if (game->kind == QLatin1String("ikemen") && started.workdir.isEmpty()) {
+	} else {
+		// IKEMEN GO's online menus (quick match, lobbies) make the matches
+		started.args = QStringList { QStringLiteral("-nakama-config"), path, QStringLiteral("-nakama-server"), QStringLiteral("launcher") } + game->args;
+		if (started.workdir.isEmpty()) {
 			started.workdir = QFileInfo(m_settings->ikemenPath()).absolutePath();
 		}
 	}
-	if (melonds && !game->profile.isEmpty()) {
-		started.args << game->profile;   // the ROM
-	}
-	QString error;
-	if (!launch(started, env, &error)) {
+	if (!launch(started, env, std::move(handoff), &error)) {
 		emit status(error);
 	}
 }

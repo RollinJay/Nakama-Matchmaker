@@ -35,6 +35,13 @@ const char* const STYLE =
 	"QListWidget { background: transparent; color: #e8e4f0; border: none; }"
 	"QListWidget::item { padding: 6px 4px; }"
 	"QListWidget::item:selected { background: #3a3150; color: #ffffff; }"
+	"QTreeWidget { background: #15111f; color: #e8e4f0; border: 1px solid #3a3150; }"
+	"QTreeWidget::item { padding: 3px 2px; }"
+	"QTreeWidget::item:selected { background: #3a3150; color: #ffffff; }"
+	"QHeaderView::section { background: #211a2e; color: #9a92b0; border: none; padding: 4px; }"
+	"QComboBox { background: #15111f; color: #e8e4f0; border: 1px solid #3a3150; padding: 3px 6px; }"
+	"QComboBox:disabled { color: #6c6480; }"
+	"QComboBox QAbstractItemView { background: #15111f; color: #e8e4f0; selection-background-color: #3a3150; }"
 	"QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox { background: #15111f; color: #e8e4f0; border: 1px solid #3a3150; padding: 4px; }"
 	"QLineEdit:disabled, QSpinBox:disabled { color: #6c6480; }"
 	"QCheckBox, QRadioButton { color: #e8e4f0; }"
@@ -154,12 +161,17 @@ LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, Launche
 	m_find = new QPushButton(tr("Find a match"));
 	m_find->setObjectName("primary");
 	m_cancel = new QPushButton(tr("Cancel"));
+	// a DS game also has melonDS's own online window: its game channels and challenges
+	m_online = new QPushButton(tr("Play online"));
+	m_online->setToolTip(tr("Open melonDS's online window, signed in to this server as this account, in the game's channel"));
 	m_play = new QPushButton(tr("Play offline"));
 	connect(m_find, &QPushButton::clicked, this, [this]() { m_core->findMatch(selectedGame()); });
 	connect(m_cancel, &QPushButton::clicked, m_core, &LauncherCore::cancelMatch);
+	connect(m_online, &QPushButton::clicked, this, [this]() { m_core->playOnline(selectedGame()); });
 	connect(m_play, &QPushButton::clicked, this, [this]() { m_core->play(selectedGame()); });
 	actions->addWidget(m_find);
 	actions->addWidget(m_cancel);
+	actions->addWidget(m_online);
 	actions->addWidget(m_play);
 	actions->addStretch();
 	channelLayout->addLayout(actions);
@@ -302,18 +314,19 @@ void LauncherWindow::updateGameInfo() {
 	const Game* game = m_catalog->find(selectedGame());
 	if (!game) {
 		m_gameTitle->setText(tr("No game"));
-		m_gameInfo->setText(tr("Add a game: an mGBA or melonDS netplay profile, or IKEMEN GO."));
+		m_gameInfo->setText(tr("Add a game: an mGBA netplay profile, a DS ROM, or IKEMEN GO."));
 		return;
 	}
 	m_gameTitle->setText(game->title);
 	QString info;
-	if (game->matchesInLauncher()) {
+	if (game->kind == QLatin1String("melonds")) {
+		m_gameInfo->setToolTip(game->profile);
+		info = tr("DS (melonDS) · 2 players · ROM %1 · Find a match looks for an opponent from here; Play online opens melonDS's own online window "
+		          "(the game's channel, challenges, quick match), with this account and server")
+		       .arg(QFileInfo(game->profile).fileName());
+	} else if (game->matchesInLauncher()) {
 		info = tr("%1 · %n players · profile %2", nullptr, game->players).arg(game->kindLabel(), QFileInfo(game->profile).fileName());
 		m_gameInfo->setToolTip(game->profile);
-	} else if (game->kind == QLatin1String("melonds")) {
-		m_gameInfo->setToolTip(game->profile);
-		info = tr("DS (melonDS) · ROM %1 · Play online opens melonDS in the game's channel and asks for a quick match, with this account and server")
-		       .arg(QFileInfo(game->profile).fileName());
 	} else {
 		m_gameInfo->setToolTip(QString());
 		info = tr("IKEMEN GO · matches are made in IKEMEN GO's online menus, with this account and server");
@@ -333,7 +346,10 @@ void LauncherWindow::updateState() {
 	m_signIn->setEnabled(state != LauncherCore::State::SigningIn && state != LauncherCore::State::Playing);
 	m_account->setText(state == LauncherCore::State::SignedOut ? tr("Not signed in") : m_settings->name());
 	m_find->setEnabled(online && game);
+	// IKEMEN GO makes its own matches: its one online button starts it with the server
 	m_find->setText(game && !game->matchesInLauncher() ? tr("Play online") : tr("Find a match"));
+	m_online->setVisible(game && game->matchesInLauncher() && game->playsOnlineItself());
+	m_online->setEnabled(online);
 	m_cancel->setVisible(state == LauncherCore::State::Matchmaking);
 	m_play->setEnabled(game && state != LauncherCore::State::Playing && state != LauncherCore::State::Matchmaking);
 	m_chatInput->setEnabled(state != LauncherCore::State::SignedOut && state != LauncherCore::State::SigningIn);

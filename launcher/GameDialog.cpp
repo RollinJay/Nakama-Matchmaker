@@ -51,6 +51,12 @@ GameDialog::GameDialog(const Game& game, QWidget* parent)
 	m_players = new QSpinBox;
 	m_players->setRange(2, 4);
 	m_players->setValue(game.players);
+	m_mgbaPlayers = game.kind == QLatin1String("mgba") ? game.players : 2;
+	connect(m_players, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), this, [this](int value) {
+		if (m_kind->currentData().toString() == QLatin1String("mgba")) {
+			m_mgbaPlayers = value;
+		}
+	});
 	form->addRow(tr("Players per match"), m_players);
 	m_ikemenGame = new QLineEdit(game.ikemenGame);
 	form->addRow(tr("IKEMEN GO game id"), m_ikemenGame);
@@ -69,8 +75,12 @@ void GameDialog::updateKind() {
 	QString kind = m_kind->currentData().toString();
 	bool emulator = kind != QLatin1String("ikemen");
 	m_profile->parentWidget()->setEnabled(emulator);
-	// melonDS's quick match pairs two players in the game's channel
-	m_profileLabel->setText(kind == QLatin1String("melonds") ? tr("ROM") : tr("Netplay profile"));
+	// a DS game is its ROM (kept in the profile field), and the melonDS fork plays two
+	// players online
+	bool ds = kind == QLatin1String("melonds");
+	m_profileLabel->setText(ds ? tr("ROM") : tr("Netplay profile"));
+	m_profile->setToolTip(ds ? tr("The DS ROM (.nds), or an archive that holds one") : tr("The mGBA fork's netplay profile (.ini)"));
+	m_players->setValue(ds ? 2 : m_mgbaPlayers);
 	m_players->setEnabled(kind == QLatin1String("mgba"));
 	m_ikemenGame->setEnabled(!emulator);
 	m_ikemenBuild->setEnabled(!emulator);
@@ -85,7 +95,7 @@ Game GameDialog::game() const {
 	}
 	g.kind = m_kind->currentData().toString();
 	g.profile = m_profile->text().trimmed();
-	g.players = m_players->value();
+	g.players = g.kind == QLatin1String("melonds") ? 2 : m_players->value();
 	g.ikemenGame = m_ikemenGame->text().trimmed();
 	g.ikemenBuild = m_ikemenBuild->text().trimmed();
 	g.args.clear();

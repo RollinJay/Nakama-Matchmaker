@@ -1,13 +1,19 @@
 /* SPDX-License-Identifier: MIT */
 #include "ServerCli.h"
 
+#include "RankedSets.h"
 #include "ServerManager.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
 #include <QSocketNotifier>
 #include <QStandardPaths>
 #include <QTimer>
@@ -247,6 +253,36 @@ void printServer(const ServerManager& manager, const ServerProfile& s, bool secr
 	}
 }
 
+/* Calls one of IKEMEN GO's moderator RPCs on a running server and waits for the answer. */
+bool moderate(ServerManager& manager, const QString& id, const QString& rpc, const QJsonObject& payload, QJsonObject* answer, QString* error) {
+	QEventLoop loop;
+	bool ok = false;
+	manager.moderatorRpc(id, rpc, payload, &loop, [&](const QJsonObject& a, const QString& e) {
+		*answer = a;
+		*error = e;
+		ok = e.isEmpty();
+		loop.quit();
+	});
+	loop.exec();
+	return ok;
+}
+
+/* A ranked set, read from the server, to name its players by their usernames. */
+bool readRankedSet(ServerManager& manager, const QString& id, const QString& matchId, RankedSet* set, QString* error) {
+	QJsonObject answer;
+	QJsonObject payload { { QStringLiteral("match_id"), matchId }, { QStringLiteral("status"), QStringLiteral("all") } };
+	if (!moderate(manager, id, QStringLiteral("ikemen_ranked_list"), payload, &answer, error)) {
+		return false;
+	}
+	QJsonArray sets = answer.value(QStringLiteral("sets")).toArray();
+	if (sets.isEmpty()) {
+		*error = QStringLiteral("The server %1 has no ranked set %2.").arg(id, matchId);
+		return false;
+	}
+	*set = RankedSet::fromJson(sets.first().toObject());
+	return true;
+}
+
 QString g_program = QStringLiteral("nakama-matchmaker server");
 
 QString usage() {
@@ -264,6 +300,11 @@ QString usage() {
 	"  run <id>... | --all       run servers until Ctrl+C or SIGTERM\n"
 	"  ikemen-profile <id> <file>  write an IKEMEN GO server profile (--game, --build, --stun)\n"
 	"  programs                  the programs the servers use (--nakama, --postgres, --modules)\n"
+	"\n"
+	"IKEMEN GO's ranked sets, on a server that runs (here or in another program):\n"
+	"  ranked <id>               the disputed sets (--status open|settled|void|all, --match)\n"
+	"  ranked-replay <id> <match id> <file or folder>  save a set's replay (--player <user>, --force)\n"
+	"  ranked-settle <id> <match id> --winner <user> | --void  decide a set (--note)\n"
 	"\n"
 	"Run '%1 <command> --help' for a command's options.\n").arg(g_program);
 }
@@ -390,6 +431,22 @@ int runServerCommand(const QString& configFolder, const QStringList& givenArgs, 
 	}
 	if (command == QLatin1String("run")) {
 		parser.addOption({ "all", "run every server" });
+	}
+	if (command == QLatin1String("ranked")) {
+		parser.addOption({ "status", "the sets to list: disputed (default), open, settled, void or all", "status" });
+		parser.addOption({ "limit", "at most this many sets (1 to 100, default 20)", "count" });
+		parser.addOption({ "cursor", "the next page: the cursor that the previous page printed", "cursor" });
+		parser.addOption({ "match", "only this set (its match id)", "match id" });
+		parser.addOption({ "json", "print the server's answer as JSON" });
+	}
+	if (command == QLatin1String("ranked-replay")) {
+		parser.addOption({ "player", "whose replay (user id or username; default: the first complete one)", "user" });
+		parser.addOption({ "force", "replace a file of the same name" });
+	}
+	if (command == QLatin1String("ranked-settle")) {
+		parser.addOption({ "winner", "the player who won the set (user id or username)", "user" });
+		parser.addOption({ "void", "void the set: nobody's rating changes" });
+		parser.addOption({ "note", "a note kept on the set's record (at most 500 characters)", "text" });
 	}
 	if (command == QLatin1String("ikemen-profile")) {
 		parser.addOption({ "game", "the IKEMEN GO game id of the profile's pools", "id" });
@@ -590,6 +647,195 @@ int runServerCommand(const QString& configFolder, const QStringList& givenArgs, 
 		}
 		file.write(manager.ikemenProfile(*s, options));
 		out(QStringLiteral("Wrote %1: put it in IKEMEN GO's data/online/servers.json.").arg(QDir::toNativeSeparators(positional.at(1))));
+		return 0;
+	}
+
+	if (command == QLatin1String("ranked")) {
+		if (!need(1, "ranked <id> [--status <status>] [--limit <count>] [--cursor <cursor>] [--match <match id>] [--json]")) {
+			return 1;
+		}
+		QString id = positional.first();
+		if (!config.find(id)) {
+			return fail(QStringLiteral("There is no server %1.").arg(id));
+		}
+		QString status = parser.isSet("status") ? parser.value("status").trimmed().toLower() : QStringLiteral("disputed");
+		static const QStringList statuses { QStringLiteral("disputed"), QStringLiteral("open"), QStringLiteral("settled"), QStringLiteral("void"),
+			                                QStringLiteral("all") };
+		if (!statuses.contains(status)) {
+			return fail(QStringLiteral("--status takes disputed, open, settled, void or all"));
+		}
+		int limit = 20;
+		if (!number(parser, "limit", &limit, &error)) {
+			return fail(error);
+		}
+		if (limit < 1 || limit > 100) {
+			return fail(QStringLiteral("--limit takes 1 to 100"));
+		}
+		QJsonObject payload { { QStringLiteral("status"), status }, { QStringLiteral("limit"), limit } };
+		if (parser.isSet("cursor")) {
+			payload.insert(QStringLiteral("cursor"), parser.value("cursor"));
+		}
+		if (parser.isSet("match")) {
+			payload.insert(QStringLiteral("match_id"), parser.value("match").trimmed());
+			if (!parser.isSet("status")) {
+				payload.insert(QStringLiteral("status"), QStringLiteral("all"));
+			}
+		}
+		QJsonObject answer;
+		if (!moderate(manager, id, QStringLiteral("ikemen_ranked_list"), payload, &answer, &error)) {
+			return fail(error);
+		}
+		if (parser.isSet("json")) {
+			fprintf(stdout, "%s", QJsonDocument(answer).toJson(QJsonDocument::Indented).constData());
+			return 0;
+		}
+		QJsonArray sets = answer.value(QStringLiteral("sets")).toArray();
+		QString which = payload.value(QStringLiteral("status")).toString();
+		if (sets.isEmpty()) {
+			out(parser.isSet("match") ? QStringLiteral("The server %1 has no ranked set %2%3.")
+			                                .arg(id, parser.value("match").trimmed(), which == QLatin1String("all") ? QString() : QStringLiteral(" that is ") + which)
+			    : which == QLatin1String("all") ? QStringLiteral("The server %1 has no ranked sets%2.").arg(id, parser.isSet("cursor") ? QStringLiteral(" after that cursor") : QString())
+			                                     : QStringLiteral("The server %1 has no %2 ranked sets%3.").arg(id, which, parser.isSet("cursor") ? QStringLiteral(" after that cursor") : QString()));
+			return 0;
+		}
+		if (!parser.isSet("match")) {
+			out(which == QLatin1String("all") ? QStringLiteral("Ranked sets on %1, newest first:").arg(id)
+			                                  : QStringLiteral("%1 ranked sets on %2, newest first:").arg(which.left(1).toUpper() + which.mid(1), id));
+		}
+		for (int i = 0; i < sets.size(); ++i) {
+			if (i > 0 || !parser.isSet("match")) {
+				out(QString());
+			}
+			for (const QString& line : RankedSet::fromJson(sets.at(i).toObject()).describe()) {
+				out(line);
+			}
+		}
+		QString cursor = answer.value(QStringLiteral("cursor")).toString();
+		if (!cursor.isEmpty()) {
+			out(QString());
+			out(QStringLiteral("More: %1 ranked %2 --status %3 --limit %4 --cursor %5").arg(g_program, id, which).arg(limit).arg(cursor));
+		}
+		return 0;
+	}
+
+	if (command == QLatin1String("ranked-replay")) {
+		if (!need(3, "ranked-replay <id> <match id> <file or folder> [--player <user id or name>] [--force]")) {
+			return 1;
+		}
+		QString id = positional.at(0);
+		QString matchId = positional.at(1).trimmed();
+		if (!config.find(id)) {
+			return fail(QStringLiteral("There is no server %1.").arg(id));
+		}
+		// a folder (one that exists, or a name that ends with a separator, which is made),
+		// or a replay file's name; anything else is most likely a folder not made yet
+		QString path = positional.at(2);
+		bool folder = QFileInfo(path).isDir() || path.endsWith(QLatin1Char('/')) || path.endsWith(QDir::separator());
+		if (!folder && !path.endsWith(QLatin1String(".replay"), Qt::CaseInsensitive)) {
+			return fail(QStringLiteral("%1 is no folder, and no replay file's name: give a folder (one that exists, or a name that ends with %2), "
+			                           "or a file name that ends with .replay.")
+			                .arg(QDir::toNativeSeparators(path), QString(QDir::separator())));
+		}
+		if (!folder && QFileInfo::exists(path) && !parser.isSet("force")) {
+			return fail(QStringLiteral("%1 exists already: --force replaces it.").arg(QDir::toNativeSeparators(path)));
+		}
+		QJsonObject payload { { QStringLiteral("match_id"), matchId } };
+		RankedSet set;
+		bool known = false;
+		if (parser.isSet("player")) {
+			if (!readRankedSet(manager, id, matchId, &set, &error)) {
+				return fail(error);
+			}
+			known = true;
+			QString player = set.findPlayer(parser.value("player"), &error);
+			if (player.isEmpty()) {
+				return fail(error);
+			}
+			payload.insert(QStringLiteral("user_id"), player);
+		}
+		QJsonObject answer;
+		if (!moderate(manager, id, QStringLiteral("ikemen_ranked_replay"), payload, &answer, &error)) {
+			return fail(error);
+		}
+		QByteArray replay = QByteArray::fromBase64(answer.value(QStringLiteral("replay")).toString().toLatin1());
+		if (replay.isEmpty()) {
+			return fail(QStringLiteral("The server %1 sent no replay for the set %2.").arg(id, matchId));
+		}
+		if (folder) {
+			if (!QDir().mkpath(path)) {
+				return fail(QStringLiteral("Cannot make the folder %1.").arg(QDir::toNativeSeparators(path)));
+			}
+			path = QDir(path).filePath(RankedSet::safeFileName(answer.value(QStringLiteral("file_name")).toString()));
+		}
+		if (QFileInfo::exists(path) && !parser.isSet("force")) {
+			return fail(QStringLiteral("%1 exists already: --force replaces it.").arg(QDir::toNativeSeparators(path)));
+		}
+		// written whole, or not at all: a file replaced stays as it was until the new one is
+		// complete (flush first: commit does not notice that writing the buffer failed)
+		QSaveFile file(path);
+		if (!file.open(QIODevice::WriteOnly) || file.write(replay) != replay.size() || !file.flush() || !file.commit()) {
+			return fail(QStringLiteral("Cannot write %1: %2").arg(QDir::toNativeSeparators(path), file.errorString()));
+		}
+		if (!known) {
+			QString ignored;
+			known = readRankedSet(manager, id, matchId, &set, &ignored);
+		}
+		QString player = answer.value(QStringLiteral("user_id")).toString();
+		int matches = answer.value(QStringLiteral("matches")).toInt();
+		out(QStringLiteral("Wrote %1: %2's replay of the set %3, %4 match%5, %6, %7.")
+		        .arg(QDir::toNativeSeparators(path), known ? set.name(player) : player, matchId)
+		        .arg(matches)
+		        .arg(matches == 1 ? QString() : QStringLiteral("es"))
+		        .arg(RankedSet::sizeLabel(replay.size()),
+		             answer.value(QStringLiteral("complete")).toBool() ? QStringLiteral("complete")
+		                                                               : QStringLiteral("incomplete (the player left, a stream did not end, or it reached the size limit)")));
+		out(QStringLiteral("Watch it with IKEMEN GO, with the set's game and build: put it in save/replays and open WATCH MODE > REPLAY, or run Ikemen_GO -replay <file>."));
+		return 0;
+	}
+
+	if (command == QLatin1String("ranked-settle")) {
+		if (!need(2, "ranked-settle <id> <match id> (--winner <user id or name> | --void) [--note <text>]")) {
+			return 1;
+		}
+		QString id = positional.at(0);
+		QString matchId = positional.at(1).trimmed();
+		if (!config.find(id)) {
+			return fail(QStringLiteral("There is no server %1.").arg(id));
+		}
+		if (parser.isSet("winner") == parser.isSet("void")) {
+			return fail(QStringLiteral("Give either --winner <user id or name> or --void."));
+		}
+		QString note = parser.value("note");
+		if (note.toUcs4().size() > 500) {   // characters, as the server counts them, not UTF-16 units
+			return fail(QStringLiteral("--note takes at most 500 characters."));
+		}
+		RankedSet set;
+		if (!readRankedSet(manager, id, matchId, &set, &error)) {
+			return fail(error);
+		}
+		QJsonObject payload { { QStringLiteral("match_id"), set.matchId } };
+		QString winner;
+		if (parser.isSet("winner")) {
+			winner = set.findPlayer(parser.value("winner"), &error);
+			if (winner.isEmpty()) {
+				return fail(error);
+			}
+			payload.insert(QStringLiteral("winner"), winner);
+		} else {
+			payload.insert(QStringLiteral("void"), true);
+		}
+		if (parser.isSet("note")) {
+			payload.insert(QStringLiteral("note"), note);
+		}
+		QJsonObject answer;
+		if (!moderate(manager, id, QStringLiteral("ikemen_ranked_settle"), payload, &answer, &error)) {
+			return fail(error);
+		}
+		if (answer.value(QStringLiteral("status")).toString() == QLatin1String("void")) {
+			out(QStringLiteral("Voided the set %1 (%2): nobody's rating changed.").arg(set.matchId, set.playersLabel()));
+		} else {
+			out(QStringLiteral("Settled the set %1 (%2): %3 won, and both players' ratings changed once.").arg(set.matchId, set.playersLabel(), set.name(winner)));
+		}
 		return 0;
 	}
 

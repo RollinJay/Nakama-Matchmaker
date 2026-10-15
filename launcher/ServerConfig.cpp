@@ -76,6 +76,33 @@ QByteArray yamlString(const QString& text) {
 	return out;
 }
 
+/* The text of a scalar that yamlString wrote (or of a plain one, such as a number). */
+QString yamlText(const QByteArray& scalar) {
+	QByteArray v = scalar.trimmed();
+	if (v.size() < 2 || !v.startsWith('"') || !v.endsWith('"')) {
+		return QString::fromUtf8(v);
+	}
+	QString out;
+	QByteArray run;   // UTF-8 bytes not yet added
+	for (int i = 1; i < v.size() - 1; ++i) {
+		char c = v.at(i);
+		if (c != '\\' || i + 1 >= v.size() - 1) {
+			run += c;
+			continue;
+		}
+		char e = v.at(++i);
+		if (e == 'u' && i + 4 < v.size() - 1) {
+			out += QString::fromUtf8(run);
+			run.clear();
+			out += QChar(ushort(v.mid(i + 1, 4).toUShort(nullptr, 16)));
+			i += 4;
+		} else {
+			run += e == 'n' ? '\n' : e == 't' ? '\t' : e;
+		}
+	}
+	return out + QString::fromUtf8(run);
+}
+
 /* Whether two listen addresses share a port: either is every address, or both are one. */
 bool overlap(const QString& a, const QString& b) {
 	auto any = [](const QString& x) { return x.isEmpty() || x == QLatin1String("0.0.0.0") || x == QLatin1String("::"); };
@@ -631,4 +658,59 @@ QByteArray ServerConfig::nakamaYaml(const ServerProfile& s, const QString& dataD
 		y += "  rev_precision: true\n";
 	}
 	return y;
+}
+
+bool ServerConfig::readStarted(const QString& dataDir, ServerProfile* profile) {
+	// the file that nakamaYaml wrote: a section's name at the start of a line, its settings
+	// indented below it
+	QFile file(QDir(dataDir).filePath(QStringLiteral("nakama.yml")));
+	if (!file.open(QIODevice::ReadOnly)) {
+		return false;
+	}
+	ServerProfile s = *profile;
+	s.bind.clear();
+	s.tlsCertificate.clear();
+	bool port = false;
+	bool key = false;
+	QByteArray section;
+	for (const QByteArray& line : file.readAll().split('\n')) {
+		if (!line.startsWith(' ')) {
+			section = line.trimmed();
+			continue;
+		}
+		QByteArray item = line.trimmed();
+		if (section == "runtime:" && item.startsWith("- ")) {
+			QString env = yamlText(item.mid(2));
+			if (env.startsWith(QLatin1String("NMM_KINDS="))) {
+				s.kinds.clear();
+				for (const QString& kind : env.mid(10).split(QLatin1Char(','))) {
+					if (!kind.isEmpty()) {
+						s.kinds.append(kind);
+					}
+				}
+			}
+			continue;
+		}
+		int colon = item.indexOf(':');
+		if (colon < 0) {
+			continue;
+		}
+		QByteArray name = item.left(colon);
+		QString value = yamlText(item.mid(colon + 1));
+		if (section == "runtime:" && name == "http_key") {
+			s.httpKey = value;
+			key = true;
+		} else if (section == "socket:" && name == "port") {
+			s.port = value.toInt(&port);
+		} else if (section == "socket:" && name == "address") {
+			s.bind = value.startsWith(QLatin1Char('[')) && value.endsWith(QLatin1Char(']')) ? value.mid(1, value.size() - 2) : value;
+		} else if (section == "socket:" && name == "ssl_certificate") {
+			s.tlsCertificate = value;
+		}
+	}
+	if (!port || !key) {
+		return false;
+	}
+	*profile = s;
+	return true;
 }

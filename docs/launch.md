@@ -1,6 +1,8 @@
 # Handing a match to an emulator
 
-When the matchmaker pairs players for an mGBA game, the launcher does not play the match itself: it writes the match to a file and starts the emulator, which joins the match and plays it. (The rollback melonDS fork and IKEMEN GO make their own matches and get a server profile instead; see the README's [Games](../README.md#games).) This document describes that file (the *connection file*, version 1) and what an emulator does with it. netplay-online's `ConnectInfo` reads and writes it.
+When the matchmaker pairs players for an mGBA or DS game (**Find a match**), the launcher does not play the match itself: it writes the match to a file and starts the emulator, which joins the match and plays it. This document describes that file (the *connection file*, version 1) and what an emulator does with it. netplay-online's `ConnectInfo` reads and writes it; the melonDS fork reads it with code of its own.
+
+The launcher's **Play online** is another thing: it starts IKEMEN GO or the melonDS fork with a *server profile*, which names the launcher's server and account, and their own online menus then make the matches (the README's [How a match is made](../README.md#how-a-match-is-made)).
 
 ## Passing the file
 
@@ -34,14 +36,14 @@ The file is a JSON object:
 |---|---|
 | `version` | 1. A reader refuses other versions. |
 | `server` | The Nakama server: host, port (7350 by default), server key, and whether it uses TLS. |
-| `session` | The launcher's session on that server. The emulator uses it as is, so the emulator is the same Nakama user as the launcher; it refreshes the session with the refresh token when the session is about to expire. |
+| `session` | A session of the launcher's account on that server, which the launcher signs in for when the match is found (its own session may be older than its refresh token). The emulator uses it as is, so the emulator is the same Nakama user as the launcher; it refreshes the session with the refresh token when the session is about to expire. |
 | `match` | The match the matchmaker made: either an authoritative match's `match_id`, or the matchmaker `token` of a relayed match (one of the two is not empty). |
 | `players` | Every player of the match, in player order: player 1 first. `user_id` is the Nakama user id, `name` the username. |
 | `self` | The local player's index in `players` (from 0). |
-| `game.kind` | `mgba`; `melonds` was used by an earlier netplay version of the melonDS fork, which the launcher no longer starts. |
-| `game.profile` | The netplay profile that the launcher matched on, as a path on this computer. |
-| `game.identity` | The profile's identity as the launcher computed it (40 hexadecimal digits). The emulator computes it again and refuses the match when they differ, since the players could not stay in sync. |
-| `stun` | STUN servers (`host:port`) for finding the public address. May be empty. |
+| `game.kind` | `mgba` or `melonds`. |
+| `game.profile` | What the launcher matched on, as a path on this computer: the netplay profile of an mGBA game, the ROM of a DS game (the path the game list holds in its `profile` field; an archive's ROM may be named as `game.zip\|game.nds`). |
+| `game.identity` | The game's identity as the launcher computed it (40 hexadecimal digits). The emulator computes it again and refuses the match when they differ, since the players could not stay in sync. |
+| `stun` | STUN servers (`host:port`) for finding the public address. May be empty (the melonDS fork then uses its own settings'). |
 | `port` | UDP port for the direct connections; 0 lets the emulator choose. |
 | `input_delay` | Input delay in frames; -1 lets the emulator choose from the measured round trip. |
 
@@ -49,10 +51,16 @@ The player order comes from the matchmaker's result, which every player receives
 
 ## What the emulator does
 
-1. Reads and deletes the file, and checks the profile's identity.
+1. Reads and deletes the file, and checks the game's identity. The melonDS fork loads the ROM that `game.profile` names (a ROM also given on its command line must be the same file), and refuses a file that is not for two players.
 2. Opens the realtime socket with the session and joins the match (by id, or by token).
 3. Sends its hello (player name, identity and kind) to the match, then exchanges address candidates with the other players through the match and connects to each of them directly ([protocol.md](protocol.md)).
 4. Plays. When the match ends, it leaves the match and exits (or returns to its own window); the launcher notices that the program exited.
+
+## Exit status
+
+The launcher passes the program's exit status on: `--auto` exits with it (the window only says that the game ended).
+
+The melonDS fork, started with a connection file, quits when the session ends: with status 0 when it ended because a player left it (either player; closing melonDS, by its window or with SIGTERM, is leaving), and with status 1 when it failed: a file it cannot use (another version, not two players, not `melonds`, a session that is not the account of the file's own player), a ROM that cannot be loaded or whose identity differs, no connection to the server or to the other player, the other player leaving before the game started, a ROM or protocol that differs from the other player's, a desync, or a failure of the other player's melonDS.
 
 ## Identities
 
@@ -62,4 +70,4 @@ The identity is what makes two players compatible, so the launcher and the emula
 <emulator> --netplay-identity <profile>
 ```
 
-which prints the identity on the last line of standard output and exits with status 0, or prints an error on standard error and exits with another status. The launcher asks again every time it looks for a match, so a ROM or save replaced in place is noticed; the room it shows for a game may use an earlier answer.
+which prints the identity on the last line of standard output and exits with status 0, or prints an error on standard error and exits with another status. For the melonDS fork, `<profile>` is the ROM, and the identity is a hash of the ROM and of the version of its online protocol (its `docs/NETPLAY.md`, "Wire formats"); it answers without a display. The launcher asks again every time it looks for a match, so a ROM or save replaced in place is noticed; the room it shows for a game may use an earlier answer.

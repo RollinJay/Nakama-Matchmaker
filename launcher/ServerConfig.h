@@ -107,6 +107,11 @@ public:
 	static bool writePrivate(const QString& path, const QByteArray& data, QString* error);
 	/* Nakama's configuration file for a server (docs/hosting.md). */
 	static QByteArray nakamaYaml(const ServerProfile&, const QString& dataDir);
+	/* Replaces the settings of a profile that its running server may have been started
+	 * with before they changed in servers.json: the port, the listen address, the HTTP key,
+	 * the TLS certificate and the games, read from the nakama.yml that the start wrote into
+	 * the data folder. False when that file cannot be read or lacks the port or the key. */
+	static bool readStarted(const QString& dataDir, ServerProfile*);
 
 private:
 	QString m_folder;

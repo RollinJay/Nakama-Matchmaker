@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "ServersWindow.h"
 
+#include "RankedPanel.h"
 #include "ServerManager.h"
 #include "Settings.h"
 
@@ -262,6 +263,14 @@ ServersWindow::ServersWindow(ServerManager* manager, Settings* settings, QWidget
 	m_log->setMaximumBlockCount(2000);
 	m_log->setLineWrapMode(QPlainTextEdit::NoWrap);
 	m_tabs->addTab(m_log, tr("Log"));
+	// IKEMEN GO's ranked sets: a tab of its own for the servers that serve IKEMEN GO
+	m_ranked = new RankedPanel(m_manager, this);
+	m_ranked->hide();
+	connect(m_tabs, &QTabWidget::currentChanged, this, [this]() {
+		if (m_tabs->currentWidget() == m_ranked) {
+			m_ranked->activate();
+		}
+	});
 	main->addWidget(m_tabs, 1);
 	columns->addLayout(main, 1);
 	rows->addLayout(columns, 1);
@@ -372,6 +381,22 @@ QLineEdit* ServersWindow::fileField(QWidget** row, bool folder) {
 	layout->addWidget(field, 1);
 	layout->addWidget(browse);
 	return field;
+}
+
+void ServersWindow::updateRankedTab(const ServerProfile* s) {
+	int index = m_tabs->indexOf(m_ranked);
+	bool wanted = s && s->serves(QStringLiteral("ikemen"));
+	if (wanted && index < 0) {
+		m_tabs->addTab(m_ranked, tr("Ranked"));
+	} else if (!wanted && index >= 0) {
+		m_tabs->removeTab(index);
+		m_ranked->hide();
+	}
+	m_ranked->setServer(wanted ? s->id : QString());
+	m_ranked->updateState();
+	if (m_tabs->currentWidget() == m_ranked) {
+		m_ranked->activate();   // another server's sets, in the tab being shown
+	}
 }
 
 bool ServersWindow::refresh() {
@@ -554,6 +579,7 @@ void ServersWindow::updateState() {
 	QString nakama = m_manager->nakamaProgram();
 	QString postgres = m_manager->postgresFolder();
 	QString modules = m_manager->modulesFolder();
+	updateRankedTab(s);
 	m_programs->setText(tr("Nakama: %1 · PostgreSQL: %2 · server modules: %3")
 	                        .arg(nakama.isEmpty() ? tr("not found (https://github.com/heroiclabs/nakama/releases)") : QDir::toNativeSeparators(nakama),
 	                             postgres.isEmpty() ? tr("not found (needed for servers with their own database)") : QDir::toNativeSeparators(postgres),

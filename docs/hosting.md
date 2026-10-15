@@ -23,11 +23,11 @@ A server is set up for one or more kinds of game. The kinds decide which server 
 
 | Kind | Players use | Server modules | Why |
 |---|---|---|---|
-| IKEMEN GO (`ikemen`) | the IKEMEN GO Nakama fork's online menus | IKEMEN GO's modules | quick and ranked matchmaking, lobbies, ratings, online names |
+| IKEMEN GO (`ikemen`) | the IKEMEN GO Nakama fork's online menus | IKEMEN GO's modules | quick and ranked matchmaking, lobbies, ratings, online names, and the ranked sets that the server's moderators decide ([IKEMEN GO's ranked sets](#ikemen-gos-ranked-sets)) |
 | GBA (`gba`, or `mgba`) | the mGBA fork's netplay window, or Nakama Matchmaker | IKEMEN GO's modules | two-player matches run as IKEMEN GO's sessions; three and four players use matches that Nakama relays |
-| DS (`ds`, or `melonds`) | the melonDS fork's online window, opened by itself or by Nakama Matchmaker's **Play online** | melonDS's channel module | the game channels: who is there, chat, challenges and quick match |
+| DS (`ds`, or `melonds`) | the melonDS fork's online window (opened by itself, or by Nakama Matchmaker's **Play online**), and Nakama Matchmaker's **Find a match** | melonDS's channel module | the game channels: who is there, chat and challenges. Quick match and Nakama Matchmaker's matches use Nakama's matchmaker and need no module; on a server for DS games alone, Nakama relays their matches |
 
-Every server also gets Nakama Matchmaker's community module, which tells clients the community's name and message, and stops players from writing into the records that the server modules keep (without it, a player could give themselves any IKEMEN GO rating). [server/modules/README.md](../server/modules/README.md) lists the modules and where they come from.
+Every server also gets Nakama Matchmaker's community module, which tells clients the community's name and message, and stops players from writing into the records that the server modules keep (without it, a player could write an IKEMEN GO rating of their own choosing). [server/modules/README.md](../server/modules/README.md) lists the modules and where they come from.
 
 Every server allows messages of up to 64 KB (Nakama's default, 4 KB, is too small for IKEMEN GO's replay streams); an IKEMEN GO server also enforces both players' rating windows in ranked matchmaking (`matchmaker.rev_precision`).
 
@@ -44,6 +44,8 @@ The other buttons:
 - **Use in this launcher** points the launcher's own settings at the server, so that whoever runs the server can play on it too.
 - **IKEMEN GO profile...** saves a server profile for IKEMEN GO ([For players](#for-players)).
 - **Open folder** opens the server's folder ([The server's folder](#the-servers-folder)).
+
+A server with IKEMEN GO also has a **Ranked** tab, for its moderators ([IKEMEN GO's ranked sets](#ikemen-gos-ranked-sets)).
 
 The bottom of the window names the programs that every server uses: Nakama, and the folder of PostgreSQL's programs. Empty fields mean "found automatically"; the line below them says what was found.
 
@@ -66,6 +68,9 @@ Both read and write the same configuration folder as the launcher's window (`--c
 | `run <id>... \| --all` | runs servers until Ctrl+C or SIGTERM, printing their logs |
 | `ikemen-profile <id> <file>` | writes an IKEMEN GO server profile (`--game`, `--build`, `--host`, `--region`, `--stun`) |
 | `programs [--nakama <file>] [--postgres <folder>] [--modules <folder>]` | the programs every server uses, as set or found |
+| `ranked <id> [--status <status>] [--match <match id>]` | a running server's IKEMEN GO ranked sets: the disputed ones, or those of `--status` (`open`, `settled`, `void` or `all`), newest first; `--limit` and `--cursor` page through them, `--json` prints the server's answer |
+| `ranked-replay <id> <match id> <file or folder> [--player <user>]` | saves a player's replay of a ranked set: to a file whose name ends with `.replay`, or into a folder (one that exists, or a name that ends with `/`, which is made) under the name the server gives it; it replaces an existing file only with `--force` |
+| `ranked-settle <id> <match id> (--winner <user> \| --void) [--note <text>]` | decides a ranked set: its winner, or no result |
 
 `run` stops every server when one of them fails, and then exits with status 1, so that a service manager can restart them; Ctrl+C or SIGTERM stops them in order (Nakama first, then its database) and exits with status 0, as does SIGHUP unless the program was started with `nohup`. `<command> --help` lists a command's options; the options of `add` and `set` are the [settings](#settings) below.
 
@@ -134,6 +139,46 @@ Players need the server's address, its port and its server key (`show` prints th
 - **melonDS fork**: System > Multiplayer > Play online (rollback)... > Settings..., server address, port and key.
 - **IKEMEN GO**: a server profile, written by `ikemen-profile` or the window's **IKEMEN GO profile...**, which an IKEMEN GO build ships as `data/online/servers.json` so that its players need no settings. The profile names the server's public address (set it first: a profile that names this computer sends every player to their own computer), the game and build whose pools its players match in, and the STUN servers that tell each player its public address.
 
+## IKEMEN GO's ranked sets
+
+IKEMEN GO's ranked matches come in *sets*. A ranked session, which the matchmaker makes for two players who asked for a ranked match, plays best-of-N sets (3 matches each by default), and the players' ratings change once per set, not per match. IKEMEN GO's modules record each set when the session starts it: the game and build, the set's length, the two players, and its status, `open`. When a set has been decided, each player's game claims its winner:
+
+- the server takes a claim only for a set it recorded, from one of its two players, while the set is open; it refuses claims for other matches, from other players, and for unranked sessions and lobbies;
+- two claims that name the same winner *settle* the set: both players' Elo ratings change, once;
+- claims that differ make the set *disputed*, and so does a second claim that did not come within 15 minutes of the set's end. A set that nobody claimed becomes *void* (no result), unless a player left it after its matches had started: it is disputed then. A player who left the session before the set was decided is noted on the set.
+
+The server also keeps both players' replays of each ranked set: in a ranked session both games publish their replay stream, and the session stores each player's stream when the set is decided, when the player leaves, or when the session ends, marked complete or incomplete. A replay is kept for 30 days, at most 16 MiB per player and set; expired replays are removed as the server stores new ones and lists the sets. Nothing replays a set automatically: a *moderator* watches the replay of a disputed set and decides it.
+
+The moderators are whoever runs the server. IKEMEN GO's modules accept the moderation calls (the RPCs `ikemen_ranked_list`, `ikemen_ranked_replay` and `ikemen_ranked_settle`) only with the server's HTTP key, never with a player's session, and Nakama Matchmaker keeps that key in `servers.json`. It makes the calls to the running server over HTTP on this computer, at the server's listen address (or 127.0.0.1) and port and never through a proxy, whether the window runs the server or another program of this computer does (the command line, a service) with the same configuration folder; for a server that another program runs, it reads the port, address and key that the server started with from the server's `nakama.yml`, since changes to its settings wait for its next start:
+
+- the **Ranked** tab of the servers' window lists the sets, the disputed ones by default (a menu shows the open, settled or void ones, or all), with their players, claims and replays. **Export replay...** saves a player's replay of the chosen set; **Settle...** decides its winner; **Void...** decides that it has no result. Settle and Void take a note, which stays on the set's record.
+- the commands `ranked`, `ranked-replay` and `ranked-settle` ([From the command line](#from-the-command-line)) do the same:
+
+```
+nakama-matchmaker-server ranked ik-club
+nakama-matchmaker-server ranked-replay ik-club <match id> ~/replays/
+nakama-matchmaker-server ranked-settle ik-club <match id> --winner Ryu --note "the replay shows Ryu winning"
+```
+
+A set's *match id* is the session's match id for its first set, and `<match id>#<n>` for its n-th set (when both players chose to play another set); the list shows it. `--winner` and `--player` take a player's user id or username. Settling a set changes the ratings as two agreeing claims would, once; voiding it changes nothing. A set that is settled or void already cannot be decided again.
+
+To watch a replay, put the exported file in the `save/replays` folder of an IKEMEN GO with the set's game and build (the list shows them) and its characters and stage, and open WATCH MODE > REPLAY, or run `Ikemen_GO -replay <file>`. Both players' replays of a set hold the same inputs; the second one is there for a set whose first replay is incomplete. The IKEMEN GO fork's `nakama/README.md` ("Ranked sets") describes the records, the claims and the replays in full.
+
+The claim window and the replays' retention are settings of IKEMEN GO's modules, Nakama *runtime environment* values, which a server takes as Nakama arguments (`--nakama-arg`, on the command line). For example, to keep replays for 7 days and wait 30 minutes for a second claim:
+
+```
+nakama-matchmaker-server set ik-club --nakama-arg=--runtime.env --nakama-arg=IKEMEN_RANKED_REPLAY_DAYS=7 \
+  --nakama-arg=--runtime.env --nakama-arg=IKEMEN_RANKED_CLAIM_MINUTES=30
+```
+
+| Value | Default | Meaning |
+|---|---|---|
+| `IKEMEN_RANKED_CLAIM_MINUTES` | 15 | Minutes after a set's end within which the second claim must come. |
+| `IKEMEN_RANKED_REPLAY_DAYS` | 30 | Days a replay is kept; 0 keeps none. |
+| `IKEMEN_RANKED_REPLAY_MAX_BYTES` | 16777216 | The most bytes kept of each player's replay of a set. |
+
+`--nakama-arg` replaces the server's earlier Nakama arguments, so give them all in one `set`; a running server takes them at its next start.
+
 ## The server's folder
 
 Each server has a folder of its own, `servers/<id>` in the configuration folder unless `--data-dir` names another. Nakama Matchmaker writes into it only when it made it, or when it is empty; a marker file (`.nakama-matchmaker-server`) tells its folders apart.
@@ -168,10 +213,10 @@ To encrypt the players' connections, the simplest is a reverse proxy (Caddy or n
 
 ## Security
 
-- **Keys and passwords.** Each server gets its own random keys: the server key, Nakama's HTTP key, session keys, console password and signing key, MFA key and database password. They are in `servers.json` and in the server's `nakama.yml`, which only their owner can read on Linux and macOS, and reach Nakama and the database through those files, the environment and standard input, never through a command line. On Windows, keep the configuration folder inside your user profile (the default), where other users cannot read it.
+- **Keys and passwords.** Each server gets its own random keys: the server key, Nakama's HTTP key, session keys, console password and signing key, MFA key and database password. They are in `servers.json` and in the server's `nakama.yml`, which only their owner can read on Linux and macOS, and reach Nakama and the database through those files, the environment and standard input, never through a command line. The ranked sets' moderation sends the HTTP key to the server within this computer, in its HTTP requests, which go to the server directly, never through a proxy. On Windows, keep the configuration folder inside your user profile (the default), where other users cannot read it.
 - **The database.** Nakama connects to a database of its own as `nakama`, a role that owns Nakama's database and has no other rights (in particular, none to run programs on the computer). The database's superuser gets a password that nobody keeps; whoever runs the server can still reach the database with PostgreSQL's single-user mode (`postgres --single -D <folder>/postgres`).
-- **The console.** Nakama's web console controls every account and record. It listens on this computer only; from elsewhere, reach it through an SSH tunnel, such as `ssh -N -L 7351:127.0.0.1:7351 you@server` and then http://127.0.0.1:7351, with the user name and password that `show --secrets` prints. Its moderation tools (looking up and banning accounts, deleting messages) are the only ones a server has.
-- **What players can do.** The server key is public, so anyone can create accounts on the server, as many as they like, and choose their names. Signed-in players can chat, create IKEMEN GO lobbies and melonDS channels (whose name the first player to open a game's channel chooses), and call the server modules' RPCs. A player's addresses (public and on their network) go to the players they play, to connect their computers. Ratings and results that IKEMEN GO players report are trusted by IKEMEN GO's modules, not checked: on a public server, treat ratings with that in mind.
+- **The console.** Nakama's web console controls every account and record. It listens on this computer only; from elsewhere, reach it through an SSH tunnel, such as `ssh -N -L 7351:127.0.0.1:7351 you@server` and then http://127.0.0.1:7351, with the user name and password that `show --secrets` prints. Its tools (looking up and banning accounts, deleting messages) are a server's moderation tools, together with the moderation of IKEMEN GO's ranked sets ([IKEMEN GO's ranked sets](#ikemen-gos-ranked-sets)).
+- **What players can do.** The server key is public, so anyone can create accounts on the server, as many as they like, and choose their names. Signed-in players can chat, create IKEMEN GO lobbies and melonDS channels (whose name the first player to open a game's channel chooses), and call the server modules' RPCs. A player's addresses (public and on their network) go to the players they play, to connect their computers. IKEMEN GO's ranked results are the players' claims: the server takes a claim only for a ranked set it recorded and only from its players, and changes the ratings only when both claims agree, or a moderator decides. Two players who agree on a false result are believed, and nothing replays the matches to check a result.
 - **Statistics sent by Nakama.** Nakama sends anonymous usage statistics to Heroic Labs when it starts and stops. Start Nakama Matchmaker with the environment variable `NAKAMA_TELEMETRY=0` to turn them off (it passes its environment on to Nakama; in the systemd unit above, add `Environment=NAKAMA_TELEMETRY=0`).
 
 ## Tested, and not
@@ -179,10 +224,11 @@ To encrypt the players' connections, the simplest is a reverse proxy (Caddy or n
 Tested on Ubuntu 24.04 with Nakama 3.41.0 and PostgreSQL 16, with every program on one computer; the window with Qt 6.4, the command line with Qt 6.4 and Qt 5.15:
 
 - servers for each kind, and for several kinds, started from the window and from both command-line programs, several at once; each server answered with its own community name and kinds, and offered only its kinds' RPCs;
-- on a GBA and IKEMEN GO server: two and three `netplay-online-test` players matched, connected and chatted; two launchers with `--auto` matched and played an mGBA fork match (`mgba-netplay-online-test`) to identical per-frame checksums;
-- on an IKEMEN GO server: the IKEMEN GO fork's 34 live Nakama tests (its client code against the server: sign-in and names, quick and ranked matchmaking with ratings, lobbies and tournaments, sessions and direct connections, watching matches) passed, with the Nakama settings those tests ask for given through `--nakama-arg`;
-- on a DS server: clients speaking the melonDS fork's channel protocol joined a channel, were paired by quick match, and had their connection signals relayed to their partner only; two launchers with `--auto` started two melonDS fork windows, which were paired in the game's channel and played with rollback (60 desync checks passed) until one was closed;
+- on GBA servers (one for GBA alone, one for every kind): two and three `netplay-online-test` players matched, connected and chatted; two launchers with `--auto` matched and played an mGBA fork match (`mgba-netplay-online-test`) to identical per-frame checksums;
+- on a server with IKEMEN GO: the IKEMEN GO fork's live Nakama tests (its client code against the server: sign-in and names, quick and ranked matchmaking with ratings, the ranked sets' claims, disputes, kept replays and moderator RPCs, lobbies and tournaments, sessions and direct connections, watching matches), with the Nakama settings those tests ask for given through `--nakama-arg`: 44 passed; the two online-name tests, which always connect to port 7350, could not reach the server, which had another port; three were skipped (two need other settings, one is a helper);
+- the moderation of IKEMEN GO's ranked sets, with sets that the IKEMEN GO fork's test helper made disputed: `ranked` listed them by status and page by page, `ranked-replay` saved both players' replays, `ranked-settle` settled a set (its winner named by username) and voided another, with notes; the window's Ranked tab listed, exported, settled and voided while another program ran the server, and listed sets by status while the window ran it; the moderator RPCs refused a player's session and a wrong HTTP key; extra runtime values given with `--nakama-arg=--runtime.env` reached the modules beside the server's own;
+- on a DS server, and on one for every kind: clients speaking the melonDS fork's channel protocol joined a channel, were paired by the channel's quick match, and had their connection signals relayed to their partner only; two launchers with `--auto` (Find a match) started two melonDS fork windows, which played with rollback (every desync check passing) until one was closed, and a launcher with `--auto` and a melonDS window's quick match met and played the same way; on the DS server, the launcher window's Play online opened melonDS's online window signed in, in the game's channel;
 - stopping with Ctrl+C, SIGTERM and the window; recovering a Nakama and a database left running; a stop while the database is being created; refusing folders that are not the server's;
-- the database role's rights, and the refusal of players' writes to the server's records.
+- the database role's rights, and the refusal of players' writes to the server's records (the ranked sets' records included).
 
-Not tested: Windows and macOS (their code paths are written but have not run), the IKEMEN GO game itself against a community server, a DS game's own wireless play (the DS test used a small homebrew ROM), TLS, and players on different networks.
+Not tested: Windows and macOS (their code paths are written but have not run), the IKEMEN GO game itself against a community server (so no community server's set came from a real game, and none of its replays was watched; the IKEMEN GO fork played its own exported replays), a DS game's own wireless play (the DS tests used a small homebrew ROM), TLS, and players on different networks.

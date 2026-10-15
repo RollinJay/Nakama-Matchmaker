@@ -53,6 +53,7 @@ private:
 	QLabel* m_gameTitle = nullptr;
 	QLabel* m_gameInfo = nullptr;
 	QPushButton* m_find = nullptr;
+	QPushButton* m_online = nullptr;
 	QPushButton* m_cancel = nullptr;
 	QPushButton* m_play = nullptr;
 	QTextEdit* m_chat = nullptr;

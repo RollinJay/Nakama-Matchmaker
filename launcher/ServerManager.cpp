@@ -7,9 +7,18 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHostAddress>
+#include <QNetworkAccessManager>
+#include <QNetworkProxy>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QStandardPaths>
-#include <QHostAddress>
+#include <QSysInfo>
+#include <QTimer>
+#include <QUrl>
+#include <QUrlQuery>
 
 #include <algorithm>
 
@@ -279,4 +288,126 @@ QStringList ServerManager::connectionInfo(const ServerProfile& profile) const {
 		}
 	}
 	return lines;
+}
+
+bool ServerManager::runningProfile(const QString& id, ServerProfile* profile, QString* why) const {
+	const ServerProfile* saved = m_config.find(id);
+	if (!saved) {
+		*why = tr("There is no server %1.").arg(id);
+		return false;
+	}
+	ServerHost* h = m_hosts.value(id);
+	if (h && h->active()) {
+		if (h->state() != ServerHost::State::Running) {
+			*why = tr("The server %1 is not running yet (%2).").arg(id, ServerHost::stateLabel(h->state()).toLower());
+			return false;
+		}
+		*profile = h->profile();
+		return true;
+	}
+	QString hostname;
+	if (ServerHost::runningElsewhere(m_config.dataDir(*saved), nullptr, &hostname)) {
+		if (!hostname.isEmpty() && hostname != QSysInfo::machineHostName()) {
+			*why = tr("The server %1 is run by the computer %2 (its server.lock says so), not by this one.").arg(id, hostname);
+			return false;
+		}
+		// another program of this computer: the settings it started the server with, which
+		// servers.json may no longer hold (a change waits for the server's next start)
+		*profile = *saved;
+		if (!ServerConfig::readStarted(m_config.dataDir(*saved), profile)) {
+			*why = tr("Cannot read the settings that the server %1 runs with (its nakama.yml in %2).")
+			           .arg(id, QDir::toNativeSeparators(m_config.dataDir(*saved)));
+			return false;
+		}
+		return true;
+	}
+	*why = tr("The server %1 is not running: start it first.").arg(id);
+	return false;
+}
+
+void ServerManager::moderatorRpc(const QString& id, const QString& rpc, const QJsonObject& payload, QObject* context, RpcDone done) {
+	QPointer<QObject> guard(context);
+	auto finish = [guard, done](const QJsonObject& answer, const QString& error) {
+		if (guard) {
+			done(answer, error);
+		}
+	};
+	ServerProfile s;
+	QString why;
+	const ServerProfile* saved = m_config.find(id);
+	if (saved && !saved->serves(QStringLiteral("ikemen"))) {
+		why = tr("The server %1 does not serve IKEMEN GO, so it has no ranked sets.").arg(id);
+	} else if (runningProfile(id, &s, &why) && !s.serves(QStringLiteral("ikemen"))) {
+		why = tr("The server %1 runs without IKEMEN GO's modules: restart it for its new games.").arg(id);
+	}
+	if (!why.isEmpty()) {
+		QTimer::singleShot(0, this, [finish, why]() { finish(QJsonObject(), why); });
+		return;
+	}
+	if (!m_http) {
+		m_http = new QNetworkAccessManager(this);
+		// straight to the server's own port on this computer, never through a proxy (such
+		// as one that http_proxy names): the URL holds the server's HTTP key
+		m_http->setProxy(QNetworkProxy::NoProxy);
+	}
+	bool tls = !s.tlsCertificate.isEmpty();
+	QString host = s.bind;
+	if (host.isEmpty() || host == QLatin1String("0.0.0.0") || host == QLatin1String("::")) {
+		host = QStringLiteral("127.0.0.1");
+	}
+	QUrl url;
+	url.setScheme(tls ? QStringLiteral("https") : QStringLiteral("http"));
+	url.setHost(host);
+	url.setPort(s.port);
+	url.setPath(QStringLiteral("/v2/rpc/") + rpc);
+	// Nakama takes the HTTP key as a query parameter; with unwrap, the body is the payload
+	// itself and the answer is the RPC's own JSON
+	QUrlQuery query;
+	query.addQueryItem(QStringLiteral("http_key"), s.httpKey);
+	query.addQueryItem(QStringLiteral("unwrap"), QString());
+	url.setQuery(query);
+	QNetworkRequest request(url);
+	request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+	QNetworkReply* reply = m_http->post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+	if (tls) {
+		reply->ignoreSslErrors();   // this computer's own server, whatever its certificate says
+	}
+	QTimer::singleShot(120000, reply, &QNetworkReply::abort);
+	QString where = QStringLiteral("%1, port %2").arg(host).arg(s.port);
+	connect(reply, &QNetworkReply::finished, this, [reply, finish, id, rpc, where]() {
+		reply->deleteLater();
+		QByteArray body = reply->readAll();
+		int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+		QJsonDocument doc = QJsonDocument::fromJson(body);
+		if (status == 200 && doc.isObject()) {
+			finish(doc.object(), QString());
+			return;
+		}
+		if (status == 0) {
+			finish(QJsonObject(), tr("Cannot reach the server %1 at %2: %3").arg(id, where, reply->errorString()));
+			return;
+		}
+		if (status == 200) {
+			finish(QJsonObject(), tr("The server %1 answered %2 with something that is not a JSON object.").arg(id, rpc));
+			return;
+		}
+		// Nakama's errors: {"code": <gRPC code>, "message": "..."}
+		QJsonObject e = doc.object();
+		int code = e.value(QStringLiteral("code")).toInt(-1);
+		QString message = e.value(QStringLiteral("message")).toString();
+		if (message.isEmpty()) {
+			message = QString::fromUtf8(body.left(200)).trimmed();
+		}
+		if (status == 404 && message.contains(QLatin1String("RPC function not found"), Qt::CaseInsensitive)) {
+			finish(QJsonObject(), tr("The server %1 has no %2 RPC: it runs IKEMEN GO modules without the ranked sets' moderation. "
+			                         "Restart it with the modules of this version of Nakama Matchmaker (or newer ones of your own).").arg(id, rpc));
+			return;
+		}
+		if (status == 401) {
+			finish(QJsonObject(), tr("The server %1 refused its HTTP key: it runs with another one than servers.json holds (restart it).").arg(id));
+			return;
+		}
+		finish(QJsonObject(), code >= 0 ? tr("The server %1 refused: %2 (code %3)").arg(id, message).arg(code)
+		                                : tr("The server %1 refused: %2 (HTTP status %3)").arg(id, message).arg(status));
+	});
 }

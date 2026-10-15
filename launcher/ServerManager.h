@@ -5,7 +5,12 @@
 #include "ServerHost.h"
 
 #include <QHash>
+#include <QJsonObject>
 #include <QObject>
+
+#include <functional>
+
+class QNetworkAccessManager;
 
 /* The community servers of this configuration folder: their profiles (servers.json) and
  * the ones running. The window and the command line share it. */
@@ -57,6 +62,22 @@ public:
 	/* What players enter to connect, as lines of text. */
 	QStringList connectionInfo(const ServerProfile&) const;
 
+	/* The profile a server runs with: the one this program started it with, or when another
+	 * program of this computer runs it (its server.lock), the saved one with the port,
+	 * address, HTTP key, certificate and games it was started with (its nakama.yml). False,
+	 * with the reason, when it is not running here. */
+	bool runningProfile(const QString& id, ServerProfile* profile, QString* why) const;
+
+	using RpcDone = std::function<void(const QJsonObject& answer, const QString& error)>;
+	/* Calls one of the IKEMEN GO modules' moderator RPCs (ikemen_ranked_list,
+	 * ikemen_ranked_replay, ikemen_ranked_settle; RankedSets.h) on a running server that
+	 * serves IKEMEN GO: over HTTP on this computer, at the server's listen address (or
+	 * 127.0.0.1) and its port, never through a proxy, with its runtime HTTP key, which goes
+	 * to that server only.
+	 * done gets the RPC's answer, or why there is none (error not empty); it is not called
+	 * when context is destroyed first. */
+	void moderatorRpc(const QString& id, const QString& rpc, const QJsonObject& payload, QObject* context, RpcDone done);
+
 signals:
 	void stateChanged(const QString& id, ServerHost::State);
 	void logLine(const QString& id, const QString& line);
@@ -64,4 +85,5 @@ signals:
 private:
 	ServerConfig m_config;
 	QHash<QString, ServerHost*> m_hosts;
+	QNetworkAccessManager* m_http = nullptr;
 };
