@@ -45,11 +45,13 @@ RankedSet RankedSet::fromJson(const QJsonObject& o) {
 	s.game = o.value(QStringLiteral("game")).toString();
 	s.build = o.value(QStringLiteral("build")).toString();
 	s.bestOf = o.value(QStringLiteral("best_of")).toInt(0);
+	s.label = o.value(QStringLiteral("label")).toString();
 	s.status = o.value(QStringLiteral("status")).toString();
 	s.reason = o.value(QStringLiteral("reason")).toString();
 	for (const QJsonValue& v : o.value(QStringLiteral("players")).toArray()) {
 		QJsonObject p = v.toObject();
-		s.players.append(Player { p.value(QStringLiteral("user_id")).toString(), p.value(QStringLiteral("username")).toString() });
+		s.players.append(Player { p.value(QStringLiteral("user_id")).toString(), p.value(QStringLiteral("username")).toString(),
+		                          p.value(QStringLiteral("level_text")).toString() });
 	}
 	for (const QJsonValue& v : o.value(QStringLiteral("claims")).toArray()) {
 		QJsonObject c = v.toObject();
@@ -115,11 +117,11 @@ QString RankedSet::findPlayer(const QString& idOrName, QString* error) const {
 }
 
 QString RankedSet::statusLabel() const {
-	QString label = status;
+	QString text = status;
 	if (!reason.isEmpty() && (status == QLatin1String("disputed") || status == QLatin1String("void"))) {
-		label += QStringLiteral(" (%1)").arg(reasonLabel(reason));
+		text += QStringLiteral(" (%1)").arg(reasonLabel(reason));
 	}
-	return label;
+	return text;
 }
 
 QString RankedSet::playersLabel() const {
@@ -170,7 +172,9 @@ QStringList RankedSet::describe() const {
 	lines << QStringLiteral("  ") + times;
 	QStringList players;
 	for (const Player& p : this->players) {
-		players.append(QStringLiteral("%1 (%2)").arg(p.username, p.userId));
+		// the level the player has now, not the one at the set's time
+		players.append(p.levelText.isEmpty() || label.isEmpty() ? QStringLiteral("%1 (%2)").arg(p.username, p.userId)
+		                                                        : tr("%1 (%2; %3 %4 now)").arg(p.username, p.userId, label, p.levelText));
 	}
 	lines << tr("  Players: %1%2").arg(players.join(tr(" vs ")), played ? QString() : tr("; no match of the set started"));
 	lines << tr("  Claims: %1").arg(claimsLabel());

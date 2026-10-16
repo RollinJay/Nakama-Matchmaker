@@ -20,6 +20,7 @@ struct RankedSet {
 	struct Player {
 		QString userId;
 		QString username;
+		QString levelText;   // the player's level now, as the server writes it (9,001); empty from older modules
 	};
 	struct Claim {
 		QString userId;
@@ -38,6 +39,7 @@ struct RankedSet {
 	QString game;
 	QString build;
 	int bestOf = 0;
+	QString label;      // what the game's levels are called ("Rating" without level settings)
 	QString status;     // open, settled, disputed or void
 	QString reason;     // why it is disputed or void (or how it was decided)
 	QList<Player> players;   // in the matchmaker's order: the first one hosted

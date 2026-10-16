@@ -16,9 +16,71 @@
 #include <QTcpServer>
 #include <QUrl>
 
+#include <algorithm>
+#include <cmath>
+
+const qint64 ServerConfig::LEVEL_MAX;
+const int ServerConfig::LEVEL_LABEL_MAX;
+const int ServerConfig::LEVEL_GAME_ID_MAX;
+
 namespace {
 
 const char* const KINDS[] = { "ikemen", "mgba", "melonds" };
+
+/* A level setting that servers.json holds: 0 when there is none, -1 when it is no whole
+ * number from 0 to LEVEL_MAX (a file written by hand), which validate() then refuses. */
+qint64 levelNumber(const QJsonValue& v) {
+	if (v.isUndefined() || v.isNull()) {
+		return 0;
+	}
+	double d = v.toDouble(-1);
+	if (!v.isDouble() || !(d >= 0 && d <= double(ServerConfig::LEVEL_MAX)) || d != std::floor(d)) {
+		return -1;
+	}
+	return qint64(d);
+}
+
+RankedLevels levelsFromJson(const QJsonObject& o) {
+	RankedLevels l;
+	l.start = levelNumber(o.value(QStringLiteral("start")));
+	l.top = levelNumber(o.value(QStringLiteral("top")));
+	l.label = o.value(QStringLiteral("label")).toString();
+	return l;
+}
+
+/* An entry as IKEMEN GO's modules read it: start and top as JSON numbers (whole numbers up
+ * to LEVEL_MAX, which Qt 5's doubles and Qt 6's integers both write exactly), and label
+ * (trimmed); each only when it is set. */
+QJsonObject levelsToJson(const RankedLevels& l) {
+	QJsonObject o;
+	if (l.hasRange()) {
+		o.insert(QStringLiteral("start"), QJsonValue(l.start));
+		o.insert(QStringLiteral("top"), QJsonValue(l.top));
+	}
+	// without surrounding spaces, which Qt finds in all of Unicode and the modules in ASCII
+	// alone: a label that validate() passed passes there too
+	QString label = ServerConfig::levelLabel(l.label);
+	if (!label.isEmpty()) {
+		o.insert(QStringLiteral("label"), label);
+	}
+	return o;
+}
+
+/* A server's level settings in IKEMEN_LEVELS's format, which servers.json keeps as well. */
+QJsonObject levelsObject(const ServerProfile& s) {
+	QJsonObject root;
+	if (!s.levels.isEmpty()) {
+		root.insert(QStringLiteral("default"), levelsToJson(s.levels));
+	}
+	QJsonObject games;
+	for (auto it = s.gameLevels.constBegin(); it != s.gameLevels.constEnd(); ++it) {
+		games.insert(it.key(), levelsToJson(it.value()));
+	}
+	if (!games.isEmpty()) {
+		root.insert(QStringLiteral("games"), games);
+	}
+	return root;
+}
 
 /* A database address, with or without its postgres:// scheme. */
 QUrl addressUrl(const QString& address) {
@@ -167,6 +229,45 @@ QString ServerProfile::clientHost() const {
 	return QStringLiteral("127.0.0.1");
 }
 
+QByteArray ServerProfile::ikemenLevels() const {
+	QJsonObject root = levelsObject(*this);
+	return root.isEmpty() ? QByteArray() : QJsonDocument(root).toJson(QJsonDocument::Compact);
+}
+
+RankedLevels ServerProfile::levelsOf(const QString& game) const {
+	RankedLevels out = levels;
+	if (out.label.isEmpty()) {
+		out.label = ServerConfig::defaultLevelLabel();
+	}
+	auto it = gameLevels.constFind(game);
+	if (it != gameLevels.constEnd()) {
+		// start and top together, as the modules take them
+		if (it->hasRange()) {
+			out.start = it->start;
+			out.top = it->top;
+		}
+		if (!it->label.isEmpty()) {
+			out.label = it->label;
+		}
+	}
+	return out;
+}
+
+bool ServerProfile::levelsInArgs() const {
+	for (const QString& arg : extraArgs) {
+		QString value = arg;
+		for (const char* flag : { "--runtime.env=", "-runtime.env=" }) {
+			if (value.startsWith(QLatin1String(flag))) {
+				value = value.mid(int(qstrlen(flag)));
+			}
+		}
+		if (value.startsWith(QLatin1String("IKEMEN_LEVELS="))) {
+			return true;
+		}
+	}
+	return false;
+}
+
 ServerConfig::ServerConfig(const QString& folder)
 	: m_folder(folder) {
 }
@@ -233,6 +334,12 @@ bool ServerConfig::load(QString* error) {
 		s.extraModules = o.value(QStringLiteral("extra_modules")).toString();
 		s.extraArgs = toList(o.value(QStringLiteral("extra_args")));
 		s.dataDir = o.value(QStringLiteral("data_dir")).toString();
+		QJsonObject levels = o.value(QStringLiteral("ikemen_levels")).toObject();
+		s.levels = levelsFromJson(levels.value(QStringLiteral("default")).toObject());
+		QJsonObject games = levels.value(QStringLiteral("games")).toObject();
+		for (auto it = games.constBegin(); it != games.constEnd(); ++it) {
+			s.gameLevels.insert(it.key(), levelsFromJson(it.value().toObject()));
+		}
 		if (s.id.isEmpty()) {
 			continue;
 		}
@@ -302,6 +409,10 @@ bool ServerConfig::save(QString* error) const {
 			{ QStringLiteral("extra_args"), QJsonArray::fromStringList(s.extraArgs) },
 			{ QStringLiteral("data_dir"), s.dataDir },
 		};
+		QJsonObject levels = levelsObject(s);
+		if (!levels.isEmpty()) {
+			o.insert(QStringLiteral("ikemen_levels"), levels);
+		}
 		servers.append(o);
 	}
 	QJsonObject root {
@@ -491,7 +602,127 @@ QString ServerConfig::validate(const ServerProfile& s) const {
 	if (s.message.size() > 500) {
 		return QStringLiteral("The message must be at most 500 characters.");
 	}
+	if (s.levelsInArgs() && (!s.levels.isEmpty() || !s.gameLevels.isEmpty())) {
+		return QStringLiteral("The Nakama arguments give IKEMEN_LEVELS too, which Nakama would take instead of the ranked levels: remove one of them.");
+	}
+	QString levels = checkLevels(s.levels, QStringLiteral("The ranked levels"));
+	if (!levels.isEmpty()) {
+		return levels;
+	}
+	for (auto it = s.gameLevels.constBegin(); it != s.gameLevels.constEnd(); ++it) {
+		QString game = checkLevelGame(it.key());
+		if (game.isEmpty() && it->isEmpty()) {
+			game = QStringLiteral("The game %1 is listed with ranked levels of its own, but has none: give its start and top, or its label, or remove it.").arg(it.key());
+		}
+		if (game.isEmpty()) {
+			game = checkLevels(*it, QStringLiteral("The ranked levels of the game %1").arg(it.key()));
+		}
+		if (!game.isEmpty()) {
+			return game;
+		}
+	}
 	return QString();
+}
+
+bool ServerConfig::parseLevel(const QString& text, qint64* value, QString* error) {
+	QString t = text.trimmed();
+	if (t.isEmpty()) {
+		*value = 0;
+		return true;
+	}
+	bool ok = false;
+	qint64 n = t.toLongLong(&ok);
+	if (!ok) {
+		// with an exponent, 1e9, or a decimal point, 9001.0: still a whole number
+		double d = t.toDouble(&ok);
+		ok = ok && std::isfinite(d) && d == std::floor(d) && d >= 0 && d <= double(LEVEL_MAX);
+		n = ok ? qint64(d) : -1;
+	}
+	if (!ok || n < 0 || n > LEVEL_MAX) {
+		*error = QStringLiteral("%1 is not a level: give a whole number from 1 to 9000000000000000, such as 9001 or 1e9.").arg(t);
+		return false;
+	}
+	*value = n;
+	return true;
+}
+
+QString ServerConfig::checkLevels(const RankedLevels& l, const QString& what) {
+	if (l.start < 0 || l.top < 0) {
+		return QStringLiteral("%1: the start and the top must be whole numbers from 1 to 9000000000000000.").arg(what);
+	}
+	if (l.hasRange()) {
+		if (l.start == 0 || l.top == 0) {
+			return QStringLiteral("%1: give both the start and the top, or neither (for the plain Elo ratings).").arg(what);
+		}
+		if (l.top <= l.start) {
+			return QStringLiteral("%1: the top (%2) must be more than the start (%3).").arg(what, levelText(l.top), levelText(l.start));
+		}
+		if (l.top > LEVEL_MAX) {
+			return QStringLiteral("%1: the top must be at most 9,000,000,000,000,000.").arg(what);
+		}
+	}
+	if (!l.label.isEmpty()) {
+		QString label = levelLabel(l.label);
+		bool control = false;
+		const auto characters = label.toUcs4();
+		for (uint c : characters) {
+			control = control || c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F);
+		}
+		if (label.isEmpty() || characters.size() > LEVEL_LABEL_MAX || control) {
+			return QStringLiteral("%1: the label must have 1 to %2 characters, none of them a control character.").arg(what, QString::number(LEVEL_LABEL_MAX));
+		}
+	}
+	return QString();
+}
+
+QString ServerConfig::checkLevelGame(const QString& game) {
+	if (game.isEmpty()) {
+		return QStringLiteral("A game with ranked levels of its own needs its game id.");
+	}
+	if (game.toUtf8().size() > LEVEL_GAME_ID_MAX) {
+		return QStringLiteral("The game id %1 is too long for ranked levels of its own: at most %2 bytes.").arg(game, QString::number(LEVEL_GAME_ID_MAX));
+	}
+	for (uint c : game.toUcs4()) {
+		// IKEMEN GO puts the game id in its matchmaking queries, which spaces would split
+		if (c <= 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) || QChar::isSpace(c)) {
+			return QStringLiteral("The game id \"%1\" has spaces or control characters: give the game id that IKEMEN GO sends (the \"game\" of its server profile).").arg(game);
+		}
+	}
+	return QString();
+}
+
+qint64 ServerConfig::levelOf(const RankedLevels& l, double elo) {
+	// as ikemen_levels.lua computes it: rounded half up below 2^52, from where every
+	// number is whole already
+	const double whole = 4503599627370496.0;
+	bool range = l.start >= 1 && l.top > l.start;
+	double v = range ? double(l.start) * std::pow(double(l.top) / double(l.start), (elo - 1000) / 1000) : elo;
+	if (std::isnan(v)) {
+		v = 1;
+	}
+	if (v < whole && v > -whole) {
+		v = std::floor(v + 0.5);
+	}
+	if (range) {
+		v = std::max(1.0, std::min(v, double(LEVEL_MAX)));
+	}
+	return qint64(v);
+}
+
+QString ServerConfig::levelText(qint64 n) {
+	QString digits = QString::number(n < 0 ? -n : n);
+	for (int i = digits.size() - 3; i > 0; i -= 3) {
+		digits.insert(i, QLatin1Char(','));
+	}
+	return n < 0 ? QLatin1Char('-') + digits : digits;
+}
+
+QString ServerConfig::describeLevels(const RankedLevels& l) {
+	QString label = l.label.isEmpty() ? defaultLevelLabel() : l.label;
+	if (!l.hasRange()) {
+		return QStringLiteral("%1: the Elo ratings themselves (1000 for a new player)").arg(label);
+	}
+	return QStringLiteral("%1: %2 for a new player, %3 at +1000 Elo").arg(label, levelText(levelOf(l, 1000)), levelText(levelOf(l, 2000)));
 }
 
 QStringList ServerConfig::conflicts(const ServerProfile& s) const {
@@ -623,6 +854,11 @@ QByteArray ServerConfig::nakamaYaml(const ServerProfile& s, const QString& dataD
 	y += "    - " + yamlString(QStringLiteral("NMM_TITLE=") + s.title) + "\n";
 	y += "    - " + yamlString(QStringLiteral("NMM_MESSAGE=") + s.message) + "\n";
 	y += "    - " + yamlString(QStringLiteral("NMM_KINDS=") + s.kinds.join(QLatin1Char(','))) + "\n";
+	QByteArray levels = s.ikemenLevels();
+	if (s.serves(QStringLiteral("ikemen")) && !levels.isEmpty()) {
+		// IKEMEN GO's ranked levels, which its modules log when the server starts
+		y += "    - " + yamlString(QStringLiteral("IKEMEN_LEVELS=") + QString::fromUtf8(levels)) + "\n";
+	}
 	y += "socket:\n";
 	y += "  server_key: " + yamlString(s.serverKey) + "\n";
 	y += "  port: " + QByteArray::number(s.port) + "\n";

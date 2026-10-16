@@ -6,7 +6,7 @@ Nakama Matchmaker is a launcher that finds online opponents through a [Nakama](h
 - **melonDS** (Nintendo DS), through the melonDS fork at [RollinJay/melonDS-test](https://github.com/RollinJay/melonDS-test) and its online play with rollback;
 - **IKEMEN GO**, through its Nakama fork at [RollinJay/IkemenGo-Nakama](https://github.com/RollinJay/IkemenGo-Nakama).
 
-Its window is laid out like Fightcade's: the games on the left, the chosen game's chat room in the middle, the players in that room on the right, and buttons that find a match, start the game with its own online menus, or start it offline.
+Its window is laid out like Fightcade's: the games on the left, the chosen game's chat room in the middle, the players in that room on the right, and buttons that find a match, start the game with its own online menus, or start it offline, and, for an IKEMEN GO game, show its leaderboard.
 
 ![The launcher, signed in, with two players in a game's room](docs/launcher.png)
 
@@ -42,6 +42,12 @@ A DS game is a ROM: a `.nds` file, or an archive that holds one (`game.zip`, or 
 
 Players can also open melonDS without the launcher (System > Multiplayer > Play online (rollback)...) and meet the launcher's players: through quick match, which meets the launcher's Find a match, or in the game's channel, where the launcher's players who pressed Play online are.
 
+## Leaderboard
+
+For an IKEMEN GO game, **Leaderboard** lists the game's ranked players on the launcher's server, highest rating first: their rank, name and level, and the ranked sets they won and lost, 50 at a time (**More** shows the next ones), with the player's own place under the list. It needs the launcher signed in, the game's IKEMEN GO game id (`game` in the game list) and a server with the IKEMEN GO fork's server modules, such as a community server ([docs/hosting.md](docs/hosting.md)).
+
+The level is what the server shows for a player's Elo rating: the rating itself, or the levels that the server's creator set, such as a power level that starts at 9,001 and reaches the billions ([docs/hosting.md](docs/hosting.md#ikemen-gos-ranked-levels)). IKEMEN GO shows the same level while it looks for a ranked match, and its change on the screen after a ranked set when the set's result comes while that screen shows; the change of a set that a moderator decides later shows on the leaderboard, not in the game ([docs/hosting.md](docs/hosting.md#ikemen-gos-ranked-levels)).
+
 ## Building
 
 The launcher needs CMake 3.16 or later, a C++14 compiler, and Qt 6 or Qt 5.10 or later (Core, Network, Widgets).
@@ -68,7 +74,7 @@ The settings (`settings.ini`) and the game list (`games.json`) are kept in the c
 | `kind` | all | `mgba`, `melonds` or `ikemen` |
 | `profile` | `mgba`, `melonds` | Path of the netplay profile (`mgba`), or the ROM (`melonds`; the field keeps the name `profile` so that earlier game lists still load) |
 | `players` | `mgba` | Players per match (a `melonds` game always has 2) |
-| `game`, `build` | `ikemen` | The IKEMEN GO pool the account plays in |
+| `game`, `build` | `ikemen` | The IKEMEN GO pool the account plays in; `game` also names the game's leaderboard |
 | `workdir` | all | Folder to start the program in (IKEMEN GO's folder by default) |
 | `args` | all | Extra arguments for the program |
 | `command` | all | Program and arguments to run instead of the configured program |
@@ -96,9 +102,9 @@ Any Nakama 3 server with the IKEMEN GO fork's server modules serves the launcher
 ## Documents
 
 - [docs/launch.md](docs/launch.md): the file that hands a match from the launcher to an emulator.
-- [docs/protocol.md](docs/protocol.md): accounts, rooms, matchmaking, the messages inside a match, the direct connections between players, and melonDS's game channels.
+- [docs/protocol.md](docs/protocol.md): accounts, IKEMEN GO's leaderboards, rooms, matchmaking, the messages inside a match, the direct connections between players, and melonDS's game channels.
 - [docs/server.md](docs/server.md): the Nakama server, set up by hand.
-- [docs/hosting.md](docs/hosting.md): community servers that Nakama Matchmaker runs, and the moderation of IKEMEN GO's ranked sets on them.
+- [docs/hosting.md](docs/hosting.md): community servers that Nakama Matchmaker runs, the moderation of IKEMEN GO's ranked sets on them, and the levels their IKEMEN GO players see for their ratings.
 
 ## Testing
 
@@ -119,7 +125,7 @@ Tested on Ubuntu 24.04 with Qt 5.15 and Qt 6.4 against Nakama 3.41.0, with every
 
 - mGBA fork: two players (two linked GBAs) and three players (three linked GBAs) matched, launched, connected and played to identical checksums, headless; two `mgba-qt` windows played a match started by two launchers;
 - melonDS fork (rollback), with a small homebrew test ROM, so a game's own DS wireless play was not part of these tests: on a DS community server and on a server with IKEMEN GO's modules, two launchers with `--auto` started two melonDS windows with the match they found, which connected and played until one melonDS was closed, every desync check passing, and melonDS and both launchers exited with status 0; a launcher with `--auto` and a melonDS window's quick match found each other and played the same way. On the DS server, from the launcher's window, Play online opened melonDS's online window signed in as the launcher's account in the game's channel, its quick match met another launcher's Find a match, and melonDS stayed in the channel after that game until it was closed; Play offline started melonDS with the ROM;
-- the launcher's window: sign-in, rooms, chat, matchmaking, starting the game and returning when it exits;
+- the launcher's window: sign-in, rooms, chat, matchmaking, starting the game and returning when it exits, and an IKEMEN GO game's leaderboard (with sets settled through the server modules' RPCs, not by IKEMEN GO itself);
 - community servers, and the moderation of IKEMEN GO's ranked sets: see [docs/hosting.md](docs/hosting.md#tested-and-not).
 
 Not yet tested: players on different networks behind real NATs, Windows and macOS builds, and starting IKEMEN GO from the launcher.

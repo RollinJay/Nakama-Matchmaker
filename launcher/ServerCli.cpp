@@ -126,6 +126,73 @@ bool number(const QCommandLineParser& parser, const QString& name, int* result, 
 	return true;
 }
 
+/* A level option's number: none (or nothing) for no number. */
+bool levelOption(const QString& name, const QString& value, qint64* result, QString* error) {
+	if (value.trimmed().toLower() == QLatin1String("none")) {
+		*result = 0;
+		return true;
+	}
+	if (!ServerConfig::parseLevel(value, result, error)) {
+		*error = QStringLiteral("--%1: %2").arg(name, *error);
+		return false;
+	}
+	return true;
+}
+
+/* IKEMEN GO's ranked levels: --level-start, --level-top and --level-label set the default,
+ * and each --game-level <game>=<start>,<top>[,<label>] the levels of a game of its own
+ * (<game>=,,<label> its label alone; <game>= removes them). */
+bool applyLevelOptions(const QCommandLineParser& parser, ServerProfile* s, QString* error) {
+	if (parser.isSet("level-start") && !levelOption(QStringLiteral("level-start"), parser.value("level-start"), &s->levels.start, error)) {
+		return false;
+	}
+	if (parser.isSet("level-top") && !levelOption(QStringLiteral("level-top"), parser.value("level-top"), &s->levels.top, error)) {
+		return false;
+	}
+	if (parser.isSet("level-label")) {
+		s->levels.label = ServerConfig::levelLabel(parser.value("level-label"));
+	}
+	for (const QString& option : parser.values("game-level")) {
+		int equals = option.indexOf(QLatin1Char('='));
+		if (equals < 0) {
+			*error = QStringLiteral("--game-level takes <game>=<start>,<top>[,<label>] (or <game>= to remove the game's levels), not %1").arg(option);
+			return false;
+		}
+		QString game = option.left(equals).trimmed();
+		QString value = option.mid(equals + 1);
+		QString bad = ServerConfig::checkLevelGame(game);
+		if (!bad.isEmpty()) {
+			*error = QStringLiteral("--game-level %1: %2").arg(option, bad);
+			return false;
+		}
+		if (value.trimmed().isEmpty()) {
+			if (!s->gameLevels.remove(game)) {
+				*error = QStringLiteral("--game-level %1=: the server has no ranked levels of its own for the game %1").arg(game);
+				return false;
+			}
+			continue;
+		}
+		// the label is the rest, commas and all
+		int first = value.indexOf(QLatin1Char(','));
+		int second = first < 0 ? -1 : value.indexOf(QLatin1Char(','), first + 1);
+		if (first < 0) {
+			*error = QStringLiteral("--game-level %1: give <start>,<top>[,<label>] after the game id (both empty for the default's, as in %2=,,<label>)").arg(option, game);
+			return false;
+		}
+		RankedLevels l;
+		QString name = QStringLiteral("game-level %1").arg(game);
+		if (!levelOption(name, value.left(first), &l.start, error) ||
+		    !levelOption(name, second < 0 ? value.mid(first + 1) : value.mid(first + 1, second - first - 1), &l.top, error)) {
+			return false;
+		}
+		if (second >= 0) {
+			l.label = ServerConfig::levelLabel(value.mid(second + 1));
+		}
+		s->gameLevels.insert(game, l);
+	}
+	return true;
+}
+
 /* The options of add and set, applied to a profile. */
 bool applyOptions(const QCommandLineParser& parser, ServerProfile* s, QString* error) {
 	if (parser.isSet("title")) {
@@ -192,7 +259,7 @@ bool applyOptions(const QCommandLineParser& parser, ServerProfile* s, QString* e
 			}
 		}
 	}
-	return true;
+	return applyLevelOptions(parser, s, error);
 }
 
 void applyPrograms(const QCommandLineParser& parser, ServerConfig* config) {
@@ -238,6 +305,19 @@ void printServer(const ServerManager& manager, const ServerProfile& s, bool secr
 	}
 	if (!s.extraArgs.isEmpty()) {
 		out(QStringLiteral("  Nakama options: %1").arg(s.extraArgs.join(QLatin1Char(' '))));
+	}
+	if (s.levelsInArgs()) {
+		out(QStringLiteral("  Ranked levels:  IKEMEN_LEVELS in the Nakama options above"));
+	} else if (s.serves(QStringLiteral("ikemen")) || !s.levels.isEmpty() || !s.gameLevels.isEmpty()) {
+		auto numbers = [](const RankedLevels& l) {
+			return l.hasRange() ? QStringLiteral(" (start %1, top %2)").arg(l.start).arg(l.top) : QString();
+		};
+		QString unused = s.serves(QStringLiteral("ikemen")) ? QString() : QStringLiteral(" (unused: the server is not for IKEMEN GO)");
+		out(QStringLiteral("  Ranked levels:  %1%2%3").arg(ServerConfig::describeLevels(s.levelsOf(QString())), numbers(s.levels), unused));
+		for (auto it = s.gameLevels.constBegin(); it != s.gameLevels.constEnd(); ++it) {
+			QString own = it->hasRange() ? numbers(*it) : QStringLiteral(" (the default's start and top)");
+			out(QStringLiteral("    game %1: %2%3").arg(it.key(), ServerConfig::describeLevels(s.levelsOf(it.key())), own));
+		}
 	}
 	out(QStringLiteral("  Data folder:    %1").arg(QDir::toNativeSeparators(manager.config().dataDir(s))));
 	if (secrets) {
@@ -417,6 +497,11 @@ int runServerCommand(const QString& configFolder, const QStringList& givenArgs, 
 		parser.addOption({ "extra-modules", "a folder of more Lua modules for the server", "folder" });
 		parser.addOption({ "data-dir", "the server's folder (default: servers/<id> in the configuration folder)", "folder" });
 		parser.addOption({ "nakama-arg", "an argument for Nakama (repeat for several; replaces the earlier ones; other users of the computer can see them)", "argument" });
+		parser.addOption({ "level-start", "IKEMEN GO's ranked levels: the level of a new player, such as 9001 (none: the plain Elo ratings, with --level-top none)", "number" });
+		parser.addOption({ "level-top", "the level of a player 1000 Elo above a new one, such as 1e9 (none: see --level-start)", "number" });
+		parser.addOption({ "level-label", "what players see the level called, such as \"Power level\" (empty: Rating)", "text" });
+		parser.addOption({ "game-level", "a game's own levels, by its IKEMEN GO game id (repeat for several; <game>=,,<label> names them only; <game>= removes them)",
+		                   "game=start,top[,label]" });
 	}
 	if (edits || command == QLatin1String("programs")) {
 		parser.addOption({ "nakama", "Nakama's executable (every server)", "file" });

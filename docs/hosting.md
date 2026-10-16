@@ -23,7 +23,7 @@ A server is set up for one or more kinds of game. The kinds decide which server 
 
 | Kind | Players use | Server modules | Why |
 |---|---|---|---|
-| IKEMEN GO (`ikemen`) | the IKEMEN GO Nakama fork's online menus | IKEMEN GO's modules | quick and ranked matchmaking, lobbies, ratings, online names, and the ranked sets that the server's moderators decide ([IKEMEN GO's ranked sets](#ikemen-gos-ranked-sets)) |
+| IKEMEN GO (`ikemen`) | the IKEMEN GO Nakama fork's online menus | IKEMEN GO's modules | quick and ranked matchmaking, lobbies, ratings, online names, and the ranked sets that the server's moderators decide ([IKEMEN GO's ranked sets](#ikemen-gos-ranked-sets)); the levels that players see for their ratings, and a leaderboard per game ([IKEMEN GO's ranked levels](#ikemen-gos-ranked-levels)) |
 | GBA (`gba`, or `mgba`) | the mGBA fork's netplay window, or Nakama Matchmaker | IKEMEN GO's modules | two-player matches run as IKEMEN GO's sessions; three and four players use matches that Nakama relays |
 | DS (`ds`, or `melonds`) | the melonDS fork's online window (opened by itself, or by Nakama Matchmaker's **Play online**), and Nakama Matchmaker's **Find a match** | melonDS's channel module | the game channels: who is there, chat and challenges. Quick match and Nakama Matchmaker's matches use Nakama's matchmaker and need no module; on a server for DS games alone, Nakama relays their matches |
 
@@ -45,7 +45,7 @@ The other buttons:
 - **IKEMEN GO profile...** saves a server profile for IKEMEN GO ([For players](#for-players)).
 - **Open folder** opens the server's folder ([The server's folder](#the-servers-folder)).
 
-A server with IKEMEN GO also has a **Ranked** tab, for its moderators ([IKEMEN GO's ranked sets](#ikemen-gos-ranked-sets)).
+A server with IKEMEN GO also has a **Ranked levels** group in its Settings tab ([IKEMEN GO's ranked levels](#ikemen-gos-ranked-levels)), and a **Ranked** tab, for its moderators ([IKEMEN GO's ranked sets](#ikemen-gos-ranked-sets)).
 
 The bottom of the window names the programs that every server uses: Nakama, and the folder of PostgreSQL's programs. Empty fields mean "found automatically"; the line below them says what was found.
 
@@ -127,6 +127,7 @@ WantedBy=multi-user.target
 | `--data-dir` | The server's folder. | `servers/<id>` in the configuration folder |
 | `--nakama-arg` | An argument for Nakama, after the generated configuration (repeat it for several). Every user of the computer can see Nakama's arguments. | none |
 | `--console-public yes` | Opens the console to other computers. It speaks plain HTTP, so an SSH tunnel is safer ([Security](#security)). | no |
+| Ranked levels / `--level-start`, `--level-top`, `--level-label`, `--game-level` | What IKEMEN GO's players see for their ranked ratings, for every game and for games of their own ([IKEMEN GO's ranked levels](#ikemen-gos-ranked-levels)). | the Elo ratings themselves, labelled "Rating" |
 
 The servers' settings and keys are kept in `servers.json` in the configuration folder, next to the launcher's `settings.ini` and `games.json`.
 
@@ -134,7 +135,7 @@ The servers' settings and keys are kept in `servers.json` in the configuration f
 
 Players need the server's address, its port and its server key (`show` prints them, and the window shows them above its tabs), and enter them in their program:
 
-- **Nakama Matchmaker**: Settings, Nakama server and Server key. On a community server it shows the community's name in its status line and the community's message in the chat.
+- **Nakama Matchmaker**: Settings, Nakama server and Server key. On a community server it shows the community's name in its status line and the community's message in the chat. For an IKEMEN GO game, its **Leaderboard** lists the game's ranked players with their levels ([IKEMEN GO's ranked levels](#ikemen-gos-ranked-levels)).
 - **mGBA fork**: Tools > Netplay..., Nakama server and Server key.
 - **melonDS fork**: System > Multiplayer > Play online (rollback)... > Settings..., server address, port and key.
 - **IKEMEN GO**: a server profile, written by `ikemen-profile` or the window's **IKEMEN GO profile...**, which an IKEMEN GO build ships as `data/online/servers.json` so that its players need no settings. The profile names the server's public address (set it first: a profile that names this computer sends every player to their own computer), the game and build whose pools its players match in, and the STUN servers that tell each player its public address.
@@ -179,6 +180,56 @@ nakama-matchmaker-server set ik-club --nakama-arg=--runtime.env --nakama-arg=IKE
 
 `--nakama-arg` replaces the server's earlier Nakama arguments, so give them all in one `set`; a running server takes them at its next start.
 
+## IKEMEN GO's ranked levels
+
+Each IKEMEN GO player has an Elo rating for each game: it starts at 1000, the matchmaker pairs ranked players by it, and each ranked set that settles changes it, by 16 between two players of the same rating ([IKEMEN GO's ranked sets](#ikemen-gos-ranked-sets)). What players see is a *level* computed from that rating, which the server's creator sets, for the whole server and for games of their own. Without settings the level is the rating itself, labelled "Rating". With them it can be, for example, a "Power level" that starts at 9,001 and reaches the billions:
+
+```text
+level = start × (top ÷ start) ^ ((Elo − 1000) ÷ 1000)
+```
+
+- **start** is the level of a new player, whose rating is 1000;
+- **top** is the level of a player 1000 Elo above a new one, which in a large community is the very top. Each step of Elo multiplies the level by the same factor, so a level stays positive however low the rating;
+- levels are whole numbers, at least 1 and at most 9,000,000,000,000,000 (up to there, the modules' numbers hold every whole number exactly).
+
+For a Hyper Dragon Ball Z community, with start 9001 and top 1,000,000,000:
+
+| Elo | Power level |
+|---|---|
+| 600 | 86 |
+| 984 (a new player who lost a first set to another) | 7,474 |
+| 1000 (a new player) | 9,001 |
+| 1016 (a new player who won a first set against another) | 10,840 |
+| 1100 | 28,765 |
+| 1500 | 3,000,167 |
+| 2000 | 1,000,000,000 |
+| 2200 | 10,212,729,937 |
+
+```
+nakama-matchmaker-server set ik-club --level-start 9001 --level-top 1000000000 --level-label "Power level"
+```
+
+| Setting (window / command line) | Meaning |
+|---|---|
+| Start / `--level-start` | The level of a new player: a whole number of at least 1, written `9001`, `1000000000` or `1e9`. |
+| Top / `--level-top` | The level of a player 1000 Elo above a new one: more than the start, and at most 9000000000000000. Start and top go together: give both, or neither (`none` on the command line) for the Elo ratings themselves. |
+| Label / `--level-label` | What players see the number called, such as "Power level": 1 to 32 characters, none of them a control character. Empty: "Rating". |
+| Games with levels of their own / `--game-level <game>=<start>,<top>[,<label>]` | A game's own start and top, and its label (the rest of the text, commas included). The game is named by the game id that IKEMEN GO sends: the `game` of its server profile, as in Nakama Matchmaker's game list (1 to 114 bytes, without spaces or control characters). What an entry leaves out is the default's: `<game>=,,<label>` only names the game's number, and `<game>=` removes the game's entry. Repeat the option for several games. |
+
+In the window, the servers' **Settings** tab has these in its **Ranked levels** group, for a server with IKEMEN GO: Start, Top and Label, a line under them that spells out what they mean ("Power level 9,001 for a new player → 1,000,000,000 at +1000 Elo ..."), and a table of the games with levels of their own (**Add a game**, **Remove the game**; an empty cell is the default's). `show` prints them.
+
+The levels are a view of the ratings: they change no rating, nor whom the matchmaker pairs. The settings can therefore change at any time, and every player's level changes with them at once, from the server's next start. Nakama Matchmaker hands them to IKEMEN GO's modules as `IKEMEN_LEVELS`, a Nakama runtime environment value in the server's `nakama.yml`, which the modules read when the server starts; the log then says which levels are in effect:
+
+```text
+ikemen levels: levels are start 9001, top 1000000000, labelled "Power level"
+```
+
+`IKEMEN_LEVELS` given as a Nakama argument as well (`--nakama-arg=--runtime.env --nakama-arg=IKEMEN_LEVELS=...`) would replace these settings, since Nakama prefers its arguments to its configuration file, so a server cannot have both.
+
+Each game also has a leaderboard on the server, which ranks its players by rating. When a ranked set settles, by its players' claims or by a moderator's settlement, the server writes both players' entries on it, and sends both players a Nakama notification with their level before and after the set; players cannot write to the leaderboard themselves. A player whose rating dates from before the leaderboards appears after their next set, or when their game next asks for their rating, as IKEMEN GO does when the player looks for a ranked match.
+
+Players see their level in IKEMEN GO while it looks for a ranked match. After the last match of a ranked set, a screen shows for four seconds their level before and after the set, or that the set is disputed and a moderator will decide, when the server's notification of the result comes while that screen shows. A result that comes later, such as a moderator's settlement of a disputed set, does not show in the game: IKEMEN GO only prints it, to its standard output, and a player who was not connected has it in their Nakama notifications, which IKEMEN GO does not read (the IKEMEN GO fork's `nakama/README.md`, "Online sessions"). Nakama Matchmaker's **Leaderboard** for an IKEMEN GO game lists the game's players by rank, with their names, levels and sets won and lost, page by page, and the player's own place. The moderators' list of ranked sets (the **Ranked** tab, `ranked`) shows each player's level now. The IKEMEN GO fork's `nakama/README.md` ("Levels") describes the levels, the leaderboards and the notifications in full.
+
 ## The server's folder
 
 Each server has a folder of its own, `servers/<id>` in the configuration folder unless `--data-dir` names another. Nakama Matchmaker writes into it only when it made it, or when it is empty; a marker file (`.nakama-matchmaker-server`) tells its folders apart.
@@ -201,7 +252,7 @@ In a container, the program can be its first process (no `--init` needed). A `se
 
 ## Your own modules
 
-A folder named in **More modules** (`--extra-modules`) adds its `.lua` files to the server's modules. A file with the name of a bundled module replaces it: that is how a community changes, for example, IKEMEN GO's rating settings (the `GAME_CONFIG` table in a copy of `ikemen_matchmaker.lua`). The log names the modules replaced, the files left out (only the `.lua` files directly in the folder are used), and the hooks and RPCs that a module of yours registers again: Nakama keeps only one of each, the one it loads last, in the order of the file names. Keep the folder outside the server's folder, whose `modules` folder is rebuilt at every start.
+A folder named in **More modules** (`--extra-modules`) adds its `.lua` files to the server's modules. A file with the name of a bundled module replaces it: that is how a community changes, for example, IKEMEN GO's Elo settings (the `GAME_CONFIG` table in a copy of `ikemen_rating.lua`: the rating a new player starts with, the K-factor and the scale) or its ranked matchmaking windows (`GAME_CONFIG` in a copy of `ikemen_matchmaker.lua`). The levels players see need no module of their own ([IKEMEN GO's ranked levels](#ikemen-gos-ranked-levels)). The log names the modules replaced, the files left out (only the `.lua` files directly in the folder are used), and the hooks and RPCs that a module of yours registers again: Nakama keeps only one of each, the one it loads last, in the order of the file names. Keep the folder outside the server's folder, whose `modules` folder is rebuilt at every start.
 
 ## Network
 
@@ -225,7 +276,8 @@ Tested on Ubuntu 24.04 with Nakama 3.41.0 and PostgreSQL 16, with every program 
 
 - servers for each kind, and for several kinds, started from the window and from both command-line programs, several at once; each server answered with its own community name and kinds, and offered only its kinds' RPCs;
 - on GBA servers (one for GBA alone, one for every kind): two and three `netplay-online-test` players matched, connected and chatted; two launchers with `--auto` matched and played an mGBA fork match (`mgba-netplay-online-test`) to identical per-frame checksums;
-- on a server with IKEMEN GO: the IKEMEN GO fork's live Nakama tests (its client code against the server: sign-in and names, quick and ranked matchmaking with ratings, the ranked sets' claims, disputes, kept replays and moderator RPCs, lobbies and tournaments, sessions and direct connections, watching matches), with the Nakama settings those tests ask for given through `--nakama-arg`: 44 passed; the two online-name tests, which always connect to port 7350, could not reach the server, which had another port; three were skipped (two need other settings, one is a helper);
+- on a server with IKEMEN GO: the IKEMEN GO fork's live Nakama tests (its client code against the server: sign-in and names, quick and ranked matchmaking with ratings, the ranked sets' claims, disputes, kept replays and moderator RPCs, the levels, leaderboards and notifications, lobbies and tournaments, sessions and direct connections, watching matches), with the Nakama settings those tests ask for given through `--nakama-arg`, and the level settings of their "example" mode given with `--level-start`, `--level-top`, `--level-label` and `--game-level`: 56 passed; three were skipped (two need other settings, one is a helper); the two that always connect to port 7350 were not run, since the server had another port;
+- IKEMEN GO's ranked levels: the settings' round trip on the command line (`add`, `set` and `show`, with both command-line programs, games added, changed and removed, and 21 values that are not valid refused, leaving `servers.json` as it was); the window's Ranked levels group, which saved the settings and a table of games, refused a top below the start, and showed the settings again after the launcher restarted; servers started from the window and from the command line logged the levels they were given; ranked sets settled through the IKEMEN GO modules' RPCs, and by `ranked-settle`, put their players on the games' leaderboards, which the launcher's Leaderboard showed with Qt 6 and Qt 5: their ranks, names, levels (up to 1,629,606,392 for a game whose levels start at a billion) and sets, page by page, and the player's own place, also from beyond the first page; and again, on a server for every kind with ranked levels set, the two launchers' mGBA fork match and their melonDS fork hand-off, and the moderation commands;
 - the moderation of IKEMEN GO's ranked sets, with sets that the IKEMEN GO fork's test helper made disputed: `ranked` listed them by status and page by page, `ranked-replay` saved both players' replays, `ranked-settle` settled a set (its winner named by username) and voided another, with notes; the window's Ranked tab listed, exported, settled and voided while another program ran the server, and listed sets by status while the window ran it; the moderator RPCs refused a player's session and a wrong HTTP key; extra runtime values given with `--nakama-arg=--runtime.env` reached the modules beside the server's own;
 - on a DS server, and on one for every kind: clients speaking the melonDS fork's channel protocol joined a channel, were paired by the channel's quick match, and had their connection signals relayed to their partner only; two launchers with `--auto` (Find a match) started two melonDS fork windows, which played with rollback (every desync check passing) until one was closed, and a launcher with `--auto` and a melonDS window's quick match met and played the same way; on the DS server, the launcher window's Play online opened melonDS's online window signed in, in the game's channel;
 - stopping with Ctrl+C, SIGTERM and the window; recovering a Nakama and a database left running; a stop while the database is being created; refusing folders that are not the server's;

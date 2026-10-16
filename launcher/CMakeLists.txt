@@ -40,6 +40,8 @@ if(BUILD_LAUNCHER)
 		LauncherCore.h
 		LauncherWindow.cpp
 		LauncherWindow.h
+		LeaderboardDialog.cpp
+		LeaderboardDialog.h
 		RankedPanel.cpp
 		RankedPanel.h
 		ServersWindow.cpp

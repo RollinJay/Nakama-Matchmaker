@@ -3,6 +3,7 @@
 
 #include "GameCatalog.h"
 #include "GameDialog.h"
+#include "LeaderboardDialog.h"
 #include "ServerManager.h"
 #include "ServersWindow.h"
 #include "Settings.h"
@@ -64,7 +65,12 @@ const char* const STYLE =
 	"QPushButton:hover { background: #4c4266; }"
 	"QPushButton:disabled { color: #6c6480; border-color: #2c2540; }"
 	"QPushButton#primary { background: #1f7f78; border-color: #2ee6d6; font-weight: bold; }"
-	"QPushButton#primary:disabled { background: #1d3533; color: #5f7d7a; border-color: #2a4a47; }";
+	"QPushButton#primary:disabled { background: #1d3533; color: #5f7d7a; border-color: #2a4a47; }"
+	"QGroupBox { color: #e8e4f0; border: 1px solid #3a3150; margin-top: 12px; padding: 8px 6px 6px 6px; }"
+	"QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #2ee6d6; }"
+	"QTableWidget { background: #15111f; color: #e8e4f0; border: 1px solid #3a3150; gridline-color: #3a3150; }"
+	"QTableWidget::item:selected { background: #3a3150; color: #ffffff; }"
+	"QTableCornerButton::section { background: #211a2e; border: none; }";
 
 }
 
@@ -165,6 +171,10 @@ LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, Launche
 	m_online = new QPushButton(tr("Play online"));
 	m_online->setToolTip(tr("Open melonDS's online window, signed in to this server as this account, in the game's channel"));
 	m_play = new QPushButton(tr("Play offline"));
+	// an IKEMEN GO game's ranked players on this server, with their levels
+	m_leaderboardButton = new QPushButton(tr("Leaderboard"));
+	m_leaderboardButton->setToolTip(tr("This game's ranked players on this server, with their levels"));
+	connect(m_leaderboardButton, &QPushButton::clicked, this, &LauncherWindow::openLeaderboard);
 	connect(m_find, &QPushButton::clicked, this, [this]() { m_core->findMatch(selectedGame()); });
 	connect(m_cancel, &QPushButton::clicked, m_core, &LauncherCore::cancelMatch);
 	connect(m_online, &QPushButton::clicked, this, [this]() { m_core->playOnline(selectedGame()); });
@@ -173,6 +183,7 @@ LauncherWindow::LauncherWindow(Settings* settings, GameCatalog* catalog, Launche
 	actions->addWidget(m_cancel);
 	actions->addWidget(m_online);
 	actions->addWidget(m_play);
+	actions->addWidget(m_leaderboardButton);
 	actions->addStretch();
 	channelLayout->addLayout(actions);
 	QLabel* chatHeading = new QLabel(tr("CHAT"));
@@ -244,6 +255,27 @@ void LauncherWindow::openServers() {
 	m_serversWindow->show();
 	m_serversWindow->raise();
 	m_serversWindow->activateWindow();
+}
+
+void LauncherWindow::openLeaderboard() {
+	const Game* game = m_catalog->find(selectedGame());
+	if (!game || game->kind != QLatin1String("ikemen")) {
+		return;
+	}
+	if (m_leaderboard && m_leaderboard->gameId() != game->id) {
+		m_leaderboard->close();   // deletes itself, later
+		m_leaderboard = nullptr;
+	}
+	if (!m_leaderboard) {
+		m_leaderboard = new LeaderboardDialog(m_core, *game, this);
+		m_leaderboard->setAttribute(Qt::WA_DeleteOnClose);
+	} else {
+		m_leaderboard->setGame(*game);   // as it is now: Edit may have changed its IKEMEN GO game id
+		m_leaderboard->reload();
+	}
+	m_leaderboard->show();
+	m_leaderboard->raise();
+	m_leaderboard->activateWindow();
 }
 
 void LauncherWindow::updateServers() {
@@ -352,6 +384,12 @@ void LauncherWindow::updateState() {
 	m_online->setEnabled(online);
 	m_cancel->setVisible(state == LauncherCore::State::Matchmaking);
 	m_play->setEnabled(game && state != LauncherCore::State::Playing && state != LauncherCore::State::Matchmaking);
+	bool ikemen = game && game->kind == QLatin1String("ikemen");
+	bool signedIn = online || state == LauncherCore::State::Matchmaking || state == LauncherCore::State::Playing;
+	m_leaderboardButton->setVisible(ikemen);
+	m_leaderboardButton->setEnabled(ikemen && signedIn && !game->ikemenGame.isEmpty());
+	m_leaderboardButton->setToolTip(ikemen && game->ikemenGame.isEmpty() ? tr("Give the game its IKEMEN GO game id (Edit) to see its leaderboard")
+	                                                                     : tr("This game's ranked players on this server, with their levels"));
 	m_chatInput->setEnabled(state != LauncherCore::State::SignedOut && state != LauncherCore::State::SigningIn);
 	m_games->setEnabled(state != LauncherCore::State::Matchmaking && state != LauncherCore::State::Playing);
 }
@@ -388,6 +426,16 @@ void LauncherWindow::editGame(bool add) {
 	QString error;
 	if (!m_catalog->save(&error)) {
 		QMessageBox::warning(this, tr("Games"), error);
+	}
+	// an open leaderboard of the game shows the game as it is now
+	if (!add && m_leaderboard && m_leaderboard->gameId() == game.id) {
+		if (edited.kind == QLatin1String("ikemen")) {
+			m_leaderboard->setGame(edited);
+			m_leaderboard->reload();
+		} else {
+			m_leaderboard->close();   // deletes itself, later
+			m_leaderboard = nullptr;
+		}
 	}
 	reloadGames();
 }

@@ -14,6 +14,7 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QTabWidget;
+class QTableWidget;
 class RankedPanel;
 class ServerManager;
 class Settings;
@@ -21,8 +22,9 @@ struct ServerProfile;
 
 /* The community servers in a window: the servers on the left; for the chosen one, its
  * state, the buttons that start and stop it, its settings, its log, what players enter,
- * and for a server with IKEMEN GO its ranked sets (RankedPanel); and the programs every
- * server uses. Servers go on running when the window is closed. */
+ * and for a server with IKEMEN GO the levels its players see for their ranked ratings and
+ * its ranked sets (RankedPanel); and the programs every server uses. Servers go on running
+ * when the window is closed. */
 class ServersWindow : public QWidget {
 	Q_OBJECT
 
@@ -57,6 +59,11 @@ private:
 	QLineEdit* fileField(QWidget** row, bool folder);
 	/* The Ranked tab is there for a server that serves IKEMEN GO. */
 	void updateRankedTab(const ServerProfile*);
+	/* The Ranked levels group: the levels of the form into a profile, or why they cannot
+	 * be; and the line that says what the default's levels mean. */
+	QString readLevels(ServerProfile*) const;
+	void updateLevelExample();
+	void addGameLevels();
 
 	ServerManager* m_manager;
 	Settings* m_settings;
@@ -96,6 +103,13 @@ private:
 	QLineEdit* m_tlsCert = nullptr;
 	QLineEdit* m_tlsKey = nullptr;
 	QLineEdit* m_extraModules = nullptr;
+	QWidget* m_levels = nullptr;
+	QLineEdit* m_levelStart = nullptr;
+	QLineEdit* m_levelTop = nullptr;
+	QLineEdit* m_levelLabel = nullptr;
+	QLabel* m_levelExample = nullptr;
+	QTableWidget* m_gameLevels = nullptr;
+	QPushButton* m_removeGameLevels = nullptr;
 	QLabel* m_formError = nullptr;
 	QPlainTextEdit* m_log = nullptr;
 	RankedPanel* m_ranked = nullptr;

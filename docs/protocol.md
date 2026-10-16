@@ -20,6 +20,10 @@ For a new account, the request's `username` parameter carries the name. An exist
 
 A server that Nakama Matchmaker runs ([hosting.md](hosting.md)) answers the RPC `community_info` (`{}` → `{"version": 1, "title": "...", "message": "...", "kinds": ["ikemen", "mgba", "melonds"]}`): the community's name, its message, and the kinds of game it is set up for. The launcher calls it after opening the realtime socket; when it answers, the status line names the community, the message appears in the chat, and a game of another kind is marked as such. Other servers have no such RPC, and the launcher goes on without it.
 
+## IKEMEN GO's leaderboards
+
+For an IKEMEN GO game, the launcher's **Leaderboard** calls the IKEMEN GO modules' RPC `ikemen_leaderboard` with the player's session: `{"game": "<game id>", "limit": 50, "cursor": "<the previous page's cursor>"}` → `{"label": "Power level", "records": [{"rank", "user_id", "name", "level", "level_text", "wins", "losses"}], "cursor": "...", "mine": {...}}`. The records come highest rating first, `cursor` is `""` after the last page, and `mine` is the player's own record, left out when the player has none. The launcher shows `level_text`, the level that the server wrote with thousands separators (`9,001`): levels reach billions and more, past what a 32-bit number holds. A server without the RPC (without IKEMEN GO's modules, or with older ones) answers that it has no such function, and the launcher says so. The IKEMEN GO fork's `nakama/README.md` ("Leaderboards") describes the RPC in full.
+
 ## Rooms
 
 Each game has a chat room: a Nakama room channel (`channel_join`, type 1, persistent) named after what the players of that game must share to play each other.

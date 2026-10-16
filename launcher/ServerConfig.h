@@ -4,9 +4,29 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QList>
+#include <QMap>
 #include <QPair>
 #include <QString>
 #include <QStringList>
+
+/* What IKEMEN GO players see for their ranked ratings (docs/hosting.md, "IKEMEN GO's ranked
+ * levels"). Each player keeps an ordinary Elo rating, which starts at 1000; IKEMEN GO's
+ * modules show a level computed from it:
+ *
+ *     level = start × (top ÷ start) ^ ((Elo − 1000) ÷ 1000)
+ *
+ * start is the level of a new player, top the level of a player 1000 Elo above a new one.
+ * Levels are whole numbers, at least 1 and at most LEVEL_MAX. Without start and top, the
+ * level is the Elo rating itself. The modules read the levels from IKEMEN_LEVELS in Nakama's
+ * runtime.env (ServerProfile::ikemenLevels), when the server starts; they change no rating. */
+struct RankedLevels {
+	qint64 start = 0;   // 0 with top 0: none (the default: the plain Elo ratings; a game: the default's)
+	qint64 top = 0;     // -1 in either: a value servers.json holds that is no whole number in range
+	QString label;      // what the number is called; empty: the default's ("Rating" for the default)
+
+	bool hasRange() const { return start != 0 || top != 0; }
+	bool isEmpty() const { return !hasRange() && label.isEmpty(); }
+};
 
 /* A community server: a Nakama server that the matchmaker runs for the players of one
  * community, of IKEMEN GO, of GBA games (the mGBA fork), of DS games (the melonDS fork),
@@ -41,6 +61,8 @@ struct ServerProfile {
 	QString extraModules;        // a folder of the operator's own Lua modules
 	QStringList extraArgs;       // more arguments for Nakama
 	QString dataDir;             // empty: servers/<id> in the configuration folder
+	RankedLevels levels;         // IKEMEN GO: the levels of every game without levels of its own
+	QMap<QString, RankedLevels> gameLevels;   // IKEMEN GO: games with levels of their own, by game id
 
 	bool managedDatabase() const { return database.isEmpty(); }
 	bool serves(const QString& kind) const { return kinds.contains(kind); }
@@ -52,6 +74,16 @@ struct ServerProfile {
 	QString clientHost() const;
 	int clientPort() const { return publicPort > 0 ? publicPort : port; }
 	bool clientSsl() const { return clientTls || !tlsCertificate.isEmpty(); }
+	/* The level settings as IKEMEN GO's modules read them, the JSON value of IKEMEN_LEVELS:
+	 * {"default": {start, top, label}, "games": {"<game id>": {start, top, label}}}, each
+	 * part only when it is set; empty when nothing is. */
+	QByteArray ikemenLevels() const;
+	/* The levels a game shows: its own entry, with what it leaves out taken from the
+	 * default's, as the modules take it; the default's for a game without one. */
+	RankedLevels levelsOf(const QString& game) const;
+	/* Whether the Nakama arguments give IKEMEN_LEVELS (--runtime.env IKEMEN_LEVELS=...),
+	 * which Nakama prefers to the configuration file's, and so to the level settings. */
+	bool levelsInArgs() const;
 };
 
 /* servers.json in the configuration folder: the programs the servers need and every
@@ -102,6 +134,33 @@ public:
 	static QStringList parseKinds(const QString&, QString* error);
 	static QString kindLabel(const QString& kind);
 	static bool validId(const QString&);
+
+	/* The highest level: up to there the modules' numbers (64-bit floating point) hold every
+	 * whole number exactly. */
+	static const qint64 LEVEL_MAX = 9000000000000000LL;
+	static const int LEVEL_LABEL_MAX = 32;     // characters
+	static const int LEVEL_GAME_ID_MAX = 114;  // bytes: "ikemen_rating.<game id>" fits Nakama's 128
+	static QString defaultLevelLabel() { return QStringLiteral("Rating"); }
+	/* A level setting as it is typed: a whole number such as 9001 or 1000000000, or written
+	 * with an exponent, such as 1e9; 0 for an empty text. False, with the reason, for
+	 * anything else. */
+	static bool parseLevel(const QString& text, qint64* value, QString* error);
+	/* Why an entry of the level settings is not valid, or an empty string; what names it in
+	 * the message ("the ranked levels", "the ranked levels of the game x"). */
+	static QString checkLevels(const RankedLevels&, const QString& what);
+	/* Why a game id cannot have levels of its own (1 to LEVEL_GAME_ID_MAX bytes, no spaces
+	 * or control characters, as IKEMEN GO sends it), or an empty string. */
+	static QString checkLevelGame(const QString& game);
+	/* A label as the modules keep it: without surrounding spaces. */
+	static QString levelLabel(const QString& text) { return text.trimmed(); }
+	/* The level of an Elo rating, as the modules compute it, under an entry that levelsOf
+	 * gave. */
+	static qint64 levelOf(const RankedLevels&, double elo);
+	/* A level with thousands separators, as the modules write it: 9,001. */
+	static QString levelText(qint64);
+	/* What an entry that levelsOf gave shows, in words: "Power level: 9,001 for a new
+	 * player, 1,000,000,000 at +1000 Elo". */
+	static QString describeLevels(const RankedLevels&);
 
 	/* Writes a file that only its owner can read. */
 	static bool writePrivate(const QString& path, const QByteArray& data, QString* error);

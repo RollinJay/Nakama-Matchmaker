@@ -15,6 +15,7 @@ This document describes setting the server up by hand. Nakama Matchmaker can als
 | Three- and four-player matches | the hook leaves them alone, and Nakama makes a relayed match |
 | The melonDS fork's game channels (who is there, chat, challenges) | the melonDS fork's `melonds_channel.lua` |
 | IKEMEN GO's ranked sets: the claims of their winners, one rating change per set, the players' replays for moderators | the IKEMEN GO fork's modules, and its moderator RPCs, called with the server's HTTP key ([hosting.md](hosting.md#ikemen-gos-ranked-sets)) |
+| IKEMEN GO's ranked levels (what players see for their ratings) and a leaderboard per game, which the launcher's Leaderboard shows | the IKEMEN GO fork's modules, with the levels in the runtime environment value `IKEMEN_LEVELS` ([hosting.md](hosting.md#ikemen-gos-ranked-levels)) |
 | The game itself | nothing: the players connect to each other directly over UDP |
 
 The emulators' matches use the `unranked` mode, so the IKEMEN GO modules' rating code never runs for them. Without the IKEMEN GO modules every match is one that Nakama relays, which the emulators play as well.
@@ -48,7 +49,7 @@ nakama --name nakama1 \
 
 Every user of the computer can see a program's arguments; to keep the keys private, put them in a configuration file instead (`--config nakama.yml`, in Nakama's YAML format: `socket.server_key` becomes `server_key:` under `socket:`).
 
-The IKEMEN GO fork's `nakama/README.md` lists its modules' own settings (runtime environment values such as how long ranked replays are kept, `--runtime.env NAME=value`).
+The IKEMEN GO fork's `nakama/README.md` lists its modules' own settings (runtime environment values such as how long ranked replays are kept, or the levels players see for their ratings, `IKEMEN_LEVELS`; `--runtime.env NAME=value`).
 
 ## Network
 

@@ -17,7 +17,9 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -30,6 +32,7 @@
 #include <QSpinBox>
 #include <QSysInfo>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -243,6 +246,75 @@ ServersWindow::ServersWindow(ServerManager* manager, Settings* settings, QWidget
 	m_extraModules = fileField(&row, true);
 	m_extraModules->setPlaceholderText(tr("a folder of Lua modules of your own (optional)"));
 	form->addRow(tr("More modules"), row);
+
+	// IKEMEN GO's ranked levels (docs/hosting.md), shown for a server with IKEMEN GO
+	QGroupBox* levels = new QGroupBox(tr("Ranked levels (IKEMEN GO)"));
+	m_levels = levels;
+	QVBoxLayout* levelsLayout = new QVBoxLayout(levels);
+	QLabel* levelsNote = new QLabel(tr("What players see for their ranked rating. Each player keeps an Elo rating, which starts at 1000 and decides "
+	                                   "who plays whom; the level shown is start × (top ÷ start) ^ ((Elo − 1000) ÷ 1000): the start for a new "
+	                                   "player, the top for a player 1000 Elo above a new one. Empty start and top show the Elo ratings themselves. "
+	                                   "Levels change no rating: new settings change every player's level at once, from the server's next start."));
+	levelsNote->setObjectName("dim");
+	levelsNote->setWordWrap(true);
+	levelsLayout->addWidget(levelsNote);
+	QHBoxLayout* defaults = new QHBoxLayout;
+	m_levelStart = new QLineEdit;
+	m_levelStart->setPlaceholderText(tr("e.g. 9001"));
+	m_levelStart->setToolTip(tr("The level of a new player: a whole number of at least 1 (1e9 is a billion)"));
+	m_levelTop = new QLineEdit;
+	m_levelTop->setPlaceholderText(tr("e.g. 1000000000"));
+	m_levelTop->setToolTip(tr("The level of a player 1000 Elo above a new one, more than the start and at most 9000000000000000; in a large community, the very top"));
+	m_levelLabel = new QLineEdit;
+	m_levelLabel->setMaxLength(ServerConfig::LEVEL_LABEL_MAX * 2);   // characters outside the BMP take two
+	m_levelLabel->setPlaceholderText(ServerConfig::defaultLevelLabel());
+	m_levelLabel->setToolTip(tr("What players see the number called, such as Power level"));
+	defaults->addWidget(new QLabel(tr("Start")));
+	defaults->addWidget(m_levelStart, 1);
+	defaults->addWidget(new QLabel(tr("Top")));
+	defaults->addWidget(m_levelTop, 1);
+	defaults->addWidget(new QLabel(tr("Label")));
+	defaults->addWidget(m_levelLabel, 1);
+	levelsLayout->addLayout(defaults);
+	m_levelExample = new QLabel;
+	m_levelExample->setTextFormat(Qt::PlainText);
+	m_levelExample->setWordWrap(true);
+	levelsLayout->addWidget(m_levelExample);
+	QLabel* gamesNote = new QLabel(tr("Games with levels of their own, by the game id that IKEMEN GO sends (the \"game\" of its server profile). "
+	                                  "An empty start and top, or label, is the default's."));
+	gamesNote->setObjectName("dim");
+	gamesNote->setWordWrap(true);
+	levelsLayout->addWidget(gamesNote);
+	m_gameLevels = new QTableWidget(0, 4);
+	m_gameLevels->setHorizontalHeaderLabels({ tr("Game id"), tr("Start"), tr("Top"), tr("Label") });
+	m_gameLevels->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+	m_gameLevels->verticalHeader()->hide();
+	m_gameLevels->setSelectionBehavior(QAbstractItemView::SelectRows);
+	m_gameLevels->setSelectionMode(QAbstractItemView::SingleSelection);
+	m_gameLevels->setMinimumHeight(110);
+	m_gameLevels->setMaximumHeight(170);
+	levelsLayout->addWidget(m_gameLevels);
+	QHBoxLayout* gameButtons = new QHBoxLayout;
+	QPushButton* addGame = new QPushButton(tr("Add a game"));
+	m_removeGameLevels = new QPushButton(tr("Remove the game"));
+	m_removeGameLevels->setEnabled(false);
+	connect(addGame, &QPushButton::clicked, this, &ServersWindow::addGameLevels);
+	connect(m_removeGameLevels, &QPushButton::clicked, this, [this]() {
+		int current = m_gameLevels->currentRow();
+		if (current >= 0) {
+			m_gameLevels->removeRow(current);
+			markDirty();
+		}
+	});
+	connect(m_gameLevels, &QTableWidget::itemSelectionChanged, this, [this]() {
+		m_removeGameLevels->setEnabled(!m_gameLevels->selectedItems().isEmpty());
+	});
+	gameButtons->addWidget(addGame);
+	gameButtons->addWidget(m_removeGameLevels);
+	gameButtons->addStretch();
+	levelsLayout->addLayout(gameButtons);
+	form->addRow(levels);
+
 	QHBoxLayout* saveRow = new QHBoxLayout;
 	m_save = new QPushButton(tr("Save"));
 	connect(m_save, &QPushButton::clicked, this, [this]() { save(); });
@@ -317,9 +389,15 @@ ServersWindow::ServersWindow(ServerManager* manager, Settings* settings, QWidget
 	connect(m_nakama, &QLineEdit::editingFinished, this, savePrograms);
 	connect(m_postgres, &QLineEdit::editingFinished, this, savePrograms);
 
-	for (QLineEdit* e : { m_titleEdit, m_message, m_bind, m_publicHost, m_serverKey, m_database, m_tlsCert, m_tlsKey, m_extraModules }) {
+	for (QLineEdit* e : { m_titleEdit, m_message, m_bind, m_publicHost, m_serverKey, m_database, m_tlsCert, m_tlsKey, m_extraModules, m_levelStart,
+	                      m_levelTop, m_levelLabel }) {
 		connect(e, &QLineEdit::textChanged, this, &ServersWindow::markDirty);
 	}
+	for (QLineEdit* e : { m_levelStart, m_levelTop, m_levelLabel }) {
+		connect(e, &QLineEdit::textChanged, this, &ServersWindow::updateLevelExample);
+	}
+	connect(m_gameLevels, &QTableWidget::itemChanged, this, &ServersWindow::markDirty);
+	connect(m_kindIkemen, &QCheckBox::toggled, m_levels, &QWidget::setVisible);
 	for (QCheckBox* c : { m_kindIkemen, m_kindGba, m_kindDs, m_clientTls }) {
 		connect(c, &QCheckBox::toggled, this, &ServersWindow::markDirty);
 	}
@@ -503,6 +581,21 @@ void ServersWindow::showServer(const QString& id) {
 	m_tlsCert->setText(p.tlsCertificate);
 	m_tlsKey->setText(p.tlsPrivateKey);
 	m_extraModules->setText(p.extraModules);
+	auto number = [](qint64 n) { return n > 0 ? QString::number(n) : QString(); };
+	m_levelStart->setText(number(p.levels.start));
+	m_levelTop->setText(number(p.levels.top));
+	m_levelLabel->setText(p.levels.label);
+	m_gameLevels->setRowCount(0);
+	for (auto it = p.gameLevels.constBegin(); it != p.gameLevels.constEnd(); ++it) {
+		int r = m_gameLevels->rowCount();
+		m_gameLevels->insertRow(r);
+		const QString cells[] = { it.key(), number(it->start), number(it->top), it->label };
+		for (int c = 0; c < 4; ++c) {
+			m_gameLevels->setItem(r, c, new QTableWidgetItem(cells[c]));
+		}
+	}
+	m_levels->setVisible(p.serves(QStringLiteral("ikemen")));
+	updateLevelExample();
 	m_formError->clear();
 	m_log->clear();
 	if (ServerHost* h = m_manager->host(id)) {
@@ -616,6 +709,83 @@ ServerProfile ServersWindow::edited() const {
 	return p;
 }
 
+QString ServersWindow::readLevels(ServerProfile* p) const {
+	QString error;
+	RankedLevels levels;
+	if (!ServerConfig::parseLevel(m_levelStart->text(), &levels.start, &error) || !ServerConfig::parseLevel(m_levelTop->text(), &levels.top, &error)) {
+		return tr("Ranked levels: %1").arg(error);
+	}
+	levels.label = ServerConfig::levelLabel(m_levelLabel->text());
+	QMap<QString, RankedLevels> games;
+	for (int r = 0; r < m_gameLevels->rowCount(); ++r) {
+		auto cell = [this, r](int c) {
+			QTableWidgetItem* item = m_gameLevels->item(r, c);
+			return item ? item->text().trimmed() : QString();
+		};
+		QString game = cell(0);
+		if (game.isEmpty() && cell(1).isEmpty() && cell(2).isEmpty() && cell(3).isEmpty()) {
+			continue;   // a row added and left empty
+		}
+		RankedLevels l;
+		if (!ServerConfig::parseLevel(cell(1), &l.start, &error) || !ServerConfig::parseLevel(cell(2), &l.top, &error)) {
+			return tr("Ranked levels of the game %1: %2").arg(game, error);
+		}
+		l.label = ServerConfig::levelLabel(cell(3));
+		if (games.contains(game)) {
+			return tr("The game %1 has two rows in the ranked levels: keep one.").arg(game);
+		}
+		QString bad = ServerConfig::checkLevelGame(game);
+		if (!bad.isEmpty()) {
+			return bad;
+		}
+		games.insert(game, l);
+	}
+	p->levels = levels;
+	p->gameLevels = games;
+	return QString();
+}
+
+void ServersWindow::updateLevelExample() {
+	RankedLevels l;
+	QString error;
+	if (!ServerConfig::parseLevel(m_levelStart->text(), &l.start, &error) || !ServerConfig::parseLevel(m_levelTop->text(), &l.top, &error)) {
+		m_levelExample->setStyleSheet(QStringLiteral("color: #ff8080;"));
+		m_levelExample->setText(error);
+		return;
+	}
+	l.label = ServerConfig::levelLabel(m_levelLabel->text());
+	QString bad = ServerConfig::checkLevels(l, tr("The levels"));
+	if (!bad.isEmpty()) {
+		m_levelExample->setStyleSheet(QStringLiteral("color: #ff8080;"));
+		m_levelExample->setText(bad);
+		return;
+	}
+	m_levelExample->setStyleSheet(QStringLiteral("color: #2ee6d6;"));
+	QString label = l.label.isEmpty() ? ServerConfig::defaultLevelLabel() : l.label;
+	auto at = [&l](double elo) { return ServerConfig::levelText(ServerConfig::levelOf(l, elo)); };
+	// a first set between two new players moves their ratings by 16 (Elo, K = 32)
+	if (!l.hasRange()) {
+		m_levelExample->setText(tr("Players see the Elo rating itself, labelled %1: 1000 for a new player; after a first set between new players, 1016 for its "
+		                           "winner and 984 for its loser.").arg(label));
+		return;
+	}
+	m_levelExample->setText(tr("%1 %2 for a new player → %3 at +1000 Elo. After a first set between new players: %4 for its winner, %5 for its loser. "
+	                           "+100 Elo: %6 · +500: %7 · −400: %8.")
+	                            .arg(label, at(1000), at(2000), at(1016), at(984), at(1100), at(1500), at(600)));
+}
+
+void ServersWindow::addGameLevels() {
+	int r = m_gameLevels->rowCount();
+	m_loading = true;   // an empty row changes nothing yet
+	m_gameLevels->insertRow(r);
+	for (int c = 0; c < 4; ++c) {
+		m_gameLevels->setItem(r, c, new QTableWidgetItem);
+	}
+	m_loading = false;
+	m_gameLevels->setCurrentCell(r, 0);
+	m_gameLevels->editItem(m_gameLevels->item(r, 0));
+}
+
 bool ServersWindow::save() {
 	if (m_current.isEmpty()) {
 		return true;
@@ -638,6 +808,14 @@ bool ServersWindow::save() {
 	ServerProfile p = edited();
 	if (p.title.isEmpty()) {
 		p.title = p.id;
+	}
+	// the Ranked levels group shows for a server with IKEMEN GO only; without it, the levels
+	// stay as they were saved (edited() keeps them)
+	QString levels = m_kindIkemen->isChecked() ? readLevels(&p) : QString();
+	if (!levels.isEmpty()) {
+		m_formError->setText(levels);
+		m_tabs->setCurrentIndex(0);
+		return false;
 	}
 	if (!p.managedDatabase() && m_external->isChecked() && p.database.isEmpty()) {
 		m_formError->setText(tr("Enter the database's address, or let the server have its own."));

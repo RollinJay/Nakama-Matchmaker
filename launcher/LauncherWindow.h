@@ -4,8 +4,10 @@
 #include "LauncherCore.h"
 
 #include <QMainWindow>
+#include <QPointer>
 
 class GameCatalog;
+class LeaderboardDialog;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -17,7 +19,8 @@ class Settings;
 
 /* The launcher's window, organized like Fightcade's: the games on the left; for the chosen
  * game, its room (chat and the players in it) and the buttons that find a match or start
- * the game. */
+ * the game, and for an IKEMEN GO game the one that shows its leaderboard on the server
+ * (LeaderboardDialog). */
 class LauncherWindow : public QMainWindow {
 	Q_OBJECT
 
@@ -39,12 +42,14 @@ private:
 	void removeGame();
 	void openServers();
 	void updateServers();
+	void openLeaderboard();
 
 	Settings* m_settings;
 	GameCatalog* m_catalog;
 	LauncherCore* m_core;
 	ServerManager* m_servers;
 	ServersWindow* m_serversWindow = nullptr;
+	QPointer<LeaderboardDialog> m_leaderboard;
 
 	QLabel* m_account = nullptr;
 	QPushButton* m_signIn = nullptr;
@@ -56,6 +61,7 @@ private:
 	QPushButton* m_online = nullptr;
 	QPushButton* m_cancel = nullptr;
 	QPushButton* m_play = nullptr;
+	QPushButton* m_leaderboardButton = nullptr;
 	QTextEdit* m_chat = nullptr;
 	QLineEdit* m_chatInput = nullptr;
 	QListWidget* m_members = nullptr;
