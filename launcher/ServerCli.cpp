@@ -27,8 +27,8 @@
 #include <unistd.h>
 #endif
 #ifdef Q_OS_WIN
-#include <shellapi.h>
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 namespace {
