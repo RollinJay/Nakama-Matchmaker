@@ -314,6 +314,12 @@ jobs:
           for pass in 1 2; do
             find "$app/Contents" -type f \( -perm +111 -o -name '*.dylib' \) -print0 |
             while IFS= read -r -d '' f; do
+              # a library's own name
+              case "$( { otool -D "$f" 2> /dev/null || true; } | tail -n +2)" in
+                /opt/homebrew/*|/usr/local/*)
+                  echo "$f: named @executable_path/../Frameworks/$(basename "$f")"
+                  install_name_tool -id "@executable_path/../Frameworks/$(basename "$f")" "$f" ;;
+              esac
               { otool -L "$f" 2> /dev/null || true; } | tail -n +2 | awk '{ print $1 }' |
                 { grep -E '^(/opt/homebrew|/usr/local)/.*\.dylib$' || true; } |
               while read -r dep; do
