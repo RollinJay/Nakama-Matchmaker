@@ -254,9 +254,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install dependencies
-        run: brew install ninja qt
+        # Qt's base modules alone (Core, Gui, Widgets, Network), so that the app gets
+        # only their plugins
+        run: brew install ninja qtbase
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
       - name: Build
         run: cmake --build build
       - name: Package
@@ -301,10 +303,31 @@ jobs:
           </plist>
           EOF
           plutil -lint "$app/Contents/Info.plist"
-          macdeployqt="$(brew --prefix qt)/bin/macdeployqt"
+          macdeployqt="$(brew --prefix qtbase)/bin/macdeployqt"
           [ -x "$macdeployqt" ] || macdeployqt="$(command -v macdeployqt)"
           # Copy Qt, its plugins and the Homebrew libraries into the app, for both programs
           "$macdeployqt" "$app" -executable="$app/Contents/MacOS/nakama-matchmaker-server" -verbose=1
+          # macdeployqt leaves some references to Homebrew's libraries (such as brotli's,
+          # which it reaches through @rpath): point them to the copies in
+          # Contents/Frameworks, and copy those it missed (a second pass fixes the copies)
+          fw="$app/Contents/Frameworks"
+          for pass in 1 2; do
+            find "$app/Contents" -type f \( -perm +111 -o -name '*.dylib' \) -print0 |
+            while IFS= read -r -d '' f; do
+              { otool -L "$f" 2> /dev/null || true; } | tail -n +2 | awk '{ print $1 }' |
+                { grep -E '^(/opt/homebrew|/usr/local)/.*\.dylib$' || true; } |
+              while read -r dep; do
+                base="$(basename "$dep")"
+                if [ ! -e "$fw/$base" ]; then
+                  cp "$dep" "$fw/$base"
+                  chmod u+w "$fw/$base"
+                  install_name_tool -id "@executable_path/../Frameworks/$base" "$fw/$base"
+                fi
+                echo "$f: $dep -> @executable_path/../Frameworks/$base"
+                install_name_tool -change "$dep" "@executable_path/../Frameworks/$base" "$f"
+              done
+            done
+          done
           codesign --force --deep --sign - "$app"
           find "$app/Contents/MacOS" "$app/Contents/Resources" -type f | sort
           (cd dist && ditto -c -k --keepParent "Nakama Matchmaker.app" ../nakama-matchmaker-macos-arm64.zip)
@@ -315,6 +338,10 @@ jobs:
           ditto -x -k nakama-matchmaker-macos-arm64.zip check
           app="check/Nakama Matchmaker.app"
           codesign --verify --deep --strict "$app"
+          # The oldest macOS that the programs and Qt run on
+          for f in "$app/Contents/MacOS/"* "$app/Contents/Frameworks/QtCore.framework/QtCore"; do
+            echo "$f: $(vtool -show-build "$f" | grep -E 'minos' | xargs)"
+          done
           # Every library must come from the app or from macOS, not from Homebrew
           refs="$(find "$app" -type f \( -perm +111 -o -name '*.dylib' \) -exec otool -L {} + 2> /dev/null || true)"
           if grep -E '^[[:space:]]+(/opt/homebrew|/usr/local)/' <<< "$refs"; then
