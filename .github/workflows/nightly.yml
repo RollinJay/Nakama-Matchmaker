@@ -14,8 +14,6 @@ on:
   schedule:
     - cron: '33 3 * * *'
   workflow_dispatch:
-  push:
-    branches: [ claude/nakama-matchmaker-dedicated-server-el209s ]
 
 permissions:
   contents: read
@@ -423,30 +421,3 @@ jobs:
           EOF
           gh release create nightly packages/* --repo "$GITHUB_REPOSITORY" --verify-tag \
             --prerelease --latest=false --title "Nightly build" --notes-file notes.md
-
-  # TEMPORARY: what the publish job would download, checked on a test branch
-  test-packages:
-    name: TEMPORARY list the packages
-    needs: [linux, windows, macos]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: packages
-          merge-multiple: true
-      - name: List the packages
-        working-directory: packages
-        run: |
-          set -euo pipefail
-          ls -l
-          sha256sum -- * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          echo "== Linux server tarball"
-          tar -tzvf nakama-matchmaker-server-linux-x86_64.tar.gz | grep -Ev 'plugins/|lib/lib' || true
-          echo "== Linux AppImage"
-          chmod +x nakama-matchmaker-linux-x86_64.AppImage
-          (mkdir x && cd x && ../nakama-matchmaker-linux-x86_64.AppImage --appimage-extract > /dev/null && find squashfs-root | sort | grep -Ev 'usr/(lib|plugins)/')
-          echo "== Windows zip"
-          unzip -l nakama-matchmaker-windows-x86_64.zip
-          echo "== macOS zip"
-          unzip -l nakama-matchmaker-macos-arm64.zip | grep -Ev 'Frameworks/|PlugIns/'
