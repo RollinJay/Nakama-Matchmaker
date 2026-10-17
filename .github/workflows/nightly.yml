@@ -1,0 +1,419 @@
+# Nightly builds of the launcher (nakama-matchmaker) and the server program
+# (nakama-matchmaker-server) with Qt 6, for Linux, Windows and macOS, published as
+# the rolling "nightly" pre-release.
+#
+#   - The schedule runs once a night and builds only when the default branch has
+#     moved since the commit that the "nightly" tag points to.
+#   - A manual run (workflow_dispatch) always builds. Only a run on the default
+#     branch publishes; on another branch it only builds.
+#   - Each package carries the server modules where the programs look for them.
+#     Nakama and PostgreSQL are not included (docs/hosting.md says how to get them).
+name: nightly
+
+on:
+  schedule:
+    - cron: '33 3 * * *'
+  workflow_dispatch:
+  push:
+    branches: [ claude/nakama-matchmaker-dedicated-server-el209s ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+
+jobs:
+  check:
+    name: Check for new commits
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compare the nightly tag with this commit
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != schedule ]; then
+            echo "A $EVENT run always builds."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # An annotated tag lists the commit it points to as refs/tags/nightly^{}.
+          tagged="$(git ls-remote --tags origin 'refs/tags/nightly*' | awk '
+            $2 == "refs/tags/nightly" { tag = $1 }
+            $2 == "refs/tags/nightly^{}" { peeled = $1 }
+            END { print (peeled != "" ? peeled : tag) }')"
+          echo "nightly tag: ${tagged:-none}; this commit: $GITHUB_SHA"
+          if [ "$tagged" = "$GITHUB_SHA" ]; then
+            echo "No new commits since the last nightly build."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  linux:
+    name: Linux x86_64 (AppImage and server tarball)
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build qt6-base-dev qt6-base-dev-tools libgl-dev libfuse2 xvfb
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TOOLS=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Install
+        # usr/bin/nakama-matchmaker, usr/bin/nakama-matchmaker-server and
+        # usr/share/nakama-matchmaker/server-modules
+        run: DESTDIR="$PWD/stage" cmake --install build
+      - name: Fetch AppImage tools
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod a+x linuxdeploy-*.AppImage
+      - name: Package the server program
+        # bin/nakama-matchmaker-server, its Qt libraries in lib/ and plugins/, and the
+        # server modules in share/, which the program finds as
+        # ../share/nakama-matchmaker/server-modules
+        env:
+          QMAKE: /usr/lib/qt6/bin/qmake
+        run: |
+          set -euo pipefail
+          mkdir -p ServerDir/usr/bin ServerDir/usr/share
+          cp stage/usr/bin/nakama-matchmaker-server ServerDir/usr/bin/
+          cp -R stage/usr/share/nakama-matchmaker ServerDir/usr/share/
+          ./linuxdeploy-x86_64.AppImage --appdir ServerDir --executable ServerDir/usr/bin/nakama-matchmaker-server --plugin qt
+          mkdir dist
+          cp -a ServerDir/usr dist/nakama-matchmaker-server
+          # linuxdeploy leaves empty folders for a desktop file and icons
+          find dist/nakama-matchmaker-server -type d -empty -delete
+          tar -C dist -czf nakama-matchmaker-server-linux-x86_64.tar.gz nakama-matchmaker-server
+          tar -tzf nakama-matchmaker-server-linux-x86_64.tar.gz
+      - name: Package the launcher as an AppImage
+        # The server modules go to usr/share in the AppImage, where the launcher finds
+        # them as ../share/nakama-matchmaker/server-modules
+        env:
+          QMAKE: /usr/lib/qt6/bin/qmake
+          LDAI_OUTPUT: nakama-matchmaker-linux-x86_64.AppImage
+        run: |
+          set -euo pipefail
+          mkdir -p AppDir/usr/bin AppDir/usr/share
+          cp stage/usr/bin/nakama-matchmaker AppDir/usr/bin/
+          cp -R stage/usr/share/nakama-matchmaker AppDir/usr/share/
+          cat > nakama-matchmaker.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Nakama Matchmaker
+          Comment=Finds online matches for mGBA, melonDS and IKEMEN GO games through a Nakama server
+          Exec=nakama-matchmaker
+          Icon=nakama-matchmaker
+          Categories=Game;
+          EOF
+          # The repository has no icon; a plain one, since an AppImage needs one
+          cat > nakama-matchmaker.svg <<'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+            <rect width="256" height="256" rx="48" fill="#25303b"/>
+            <circle cx="96" cy="128" r="52" fill="#4fa3e0"/>
+            <circle cx="160" cy="128" r="52" fill="#e0884f" fill-opacity="0.85"/>
+          </svg>
+          EOF
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/nakama-matchmaker \
+            --desktop-file nakama-matchmaker.desktop --icon-file nakama-matchmaker.svg --plugin qt --output appimage
+          ls -l nakama-matchmaker-linux-x86_64.AppImage
+      - name: Check the packages
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          set -euo pipefail
+          cfg="$(mktemp -d)"
+          mkdir check
+          tar -C check -xzf nakama-matchmaker-server-linux-x86_64.tar.gz
+          server=check/nakama-matchmaker-server/bin/nakama-matchmaker-server
+          echo "Qt libraries of the server program:"
+          ldd "$server" | grep -i 'libQt'
+          if ldd "$server" | grep -i 'libQt' | grep -v "$PWD/check/"; then
+            echo "The server program uses Qt libraries from outside the package"
+            exit 1
+          fi
+          "$server" --config "$cfg" programs | tee programs.txt
+          grep -Eq '^Server modules: +.*/nakama-matchmaker-server/share/nakama-matchmaker/server-modules$' programs.txt
+
+          app="$PWD/nakama-matchmaker-linux-x86_64.AppImage"
+          "$app" --config "$cfg" server programs | tee programs.txt
+          grep -Eq '^Server modules: +.*/usr/share/nakama-matchmaker/server-modules$' programs.txt
+          # The window opens, and stays open
+          xvfb-run -a -s '-screen 0 1280x800x24' "$app" --config "$cfg" > gui.log 2>&1 &
+          pid=$!
+          sleep 15
+          if ! kill -0 "$pid" 2> /dev/null; then
+            cat gui.log
+            echo "The launcher exited"
+            exit 1
+          fi
+          kill "$pid" || true
+          cat gui.log
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nightly-linux-x86_64
+          path: |
+            nakama-matchmaker-linux-x86_64.AppImage
+            nakama-matchmaker-server-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64 (zip)
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+      - name: Build
+        run: cmake --build build
+      - name: Package
+        # Both programs, their Qt DLLs and plugins, the Visual C++ runtime, and the
+        # server modules next to the programs, where they look for them first
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cmake --install build --prefix stage
+          $out = 'dist\nakama-matchmaker'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item stage\bin\nakama-matchmaker.exe, stage\bin\nakama-matchmaker-server.exe $out
+          Copy-Item -Recurse stage\share\nakama-matchmaker\server-modules "$out\server-modules"
+          foreach ($exe in 'nakama-matchmaker.exe', 'nakama-matchmaker-server.exe') {
+            windeployqt --release --no-translations --no-opengl-sw --no-compiler-runtime "$out\$exe"
+          }
+          if (-not $env:VCToolsRedistDir) { throw 'VCToolsRedistDir is not set' }
+          Copy-Item "$env:VCToolsRedistDir\x64\Microsoft.VC*.CRT\*.dll" $out
+          Get-ChildItem -Recurse -File $out | ForEach-Object { $_.FullName.Substring((Resolve-Path dist).Path.Length + 1) }
+          7z a -tzip -mx=9 nakama-matchmaker-windows-x86_64.zip ".\$out"
+      - name: Check the package
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive nakama-matchmaker-windows-x86_64.zip -DestinationPath check
+          $dir = (Resolve-Path check\nakama-matchmaker).Path
+          $cfg = Join-Path $env:RUNNER_TEMP 'nakama-matchmaker-config'
+          $stdout = Join-Path $env:RUNNER_TEMP 'stdout.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'stderr.txt'
+          # Only Windows' own folders, so that every DLL must come from the package
+          $env:PATH = 'C:\Windows\System32;C:\Windows'
+          function Check-Modules([string]$exe, [string[]]$arguments) {
+            $p = Start-Process -FilePath (Join-Path $dir $exe) -ArgumentList $arguments `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr -NoNewWindow -PassThru
+            $null = $p.Handle  # keeps the exit code readable after the process ends
+            if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "$exe did not exit (a missing DLL?)" }
+            Get-Content $stdout, $stderr
+            if ($p.ExitCode -ne 0) { throw "$exe exited with code $($p.ExitCode)" }
+            $expected = '^Server modules: +' + [regex]::Escape((Join-Path $dir 'server-modules')) + '$'
+            if (-not (Select-String -Path $stdout -Pattern $expected -Quiet)) { throw "$exe did not find the server modules" }
+          }
+          Check-Modules 'nakama-matchmaker-server.exe' @('--config', $cfg, 'programs')
+          Check-Modules 'nakama-matchmaker.exe' @('--config', $cfg, 'server', 'programs')
+          # The window opens, and stays open
+          $p = Start-Process -FilePath (Join-Path $dir 'nakama-matchmaker.exe') -ArgumentList '--config', $cfg -PassThru
+          Start-Sleep -Seconds 15
+          $p.Refresh()
+          $exited = $p.HasExited
+          $title = $p.MainWindowTitle
+          if (-not $exited) { Stop-Process -Id $p.Id -Force }
+          Write-Output "Main window title: '$title'"
+          if ($exited) { throw "The launcher exited with code $($p.ExitCode)" }
+          if ($title -notlike 'Nakama Matchmaker*') { throw 'The launcher did not open its window' }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nightly-windows-x86_64
+          path: nakama-matchmaker-windows-x86_64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS arm64 (zipped app)
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: brew install ninja qt
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+      - name: Build
+        run: cmake --build build
+      - name: Package
+        # The launcher as an app, with the server program beside it in Contents/MacOS
+        # and the server modules in Contents/Resources, where both programs look for
+        # them (../Resources/server-modules)
+        run: |
+          set -euo pipefail
+          cmake --install build --prefix stage
+          app="dist/Nakama Matchmaker.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp stage/bin/nakama-matchmaker stage/bin/nakama-matchmaker-server "$app/Contents/MacOS/"
+          cp -R stage/share/nakama-matchmaker/server-modules "$app/Contents/Resources/"
+          cat > "$app/Contents/Info.plist" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleDisplayName</key>
+            <string>Nakama Matchmaker</string>
+            <key>CFBundleExecutable</key>
+            <string>nakama-matchmaker</string>
+            <key>CFBundleIdentifier</key>
+            <string>io.github.rollinjay.nakama-matchmaker</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>Nakama Matchmaker</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>0.1.0</string>
+            <key>CFBundleVersion</key>
+            <string>0.1.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>NSPrincipalClass</key>
+            <string>NSApplication</string>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$app/Contents/Info.plist"
+          macdeployqt="$(brew --prefix qt)/bin/macdeployqt"
+          [ -x "$macdeployqt" ] || macdeployqt="$(command -v macdeployqt)"
+          # Copy Qt, its plugins and the Homebrew libraries into the app, for both programs
+          "$macdeployqt" "$app" -executable="$app/Contents/MacOS/nakama-matchmaker-server" -verbose=1
+          codesign --force --deep --sign - "$app"
+          find "$app/Contents/MacOS" "$app/Contents/Resources" -type f | sort
+          (cd dist && ditto -c -k --keepParent "Nakama Matchmaker.app" ../nakama-matchmaker-macos-arm64.zip)
+      - name: Check the package
+        run: |
+          set -euo pipefail
+          mkdir check
+          ditto -x -k nakama-matchmaker-macos-arm64.zip check
+          app="check/Nakama Matchmaker.app"
+          codesign --verify --deep --strict "$app"
+          # Every library must come from the app or from macOS, not from Homebrew
+          refs="$(find "$app" -type f \( -perm +111 -o -name '*.dylib' \) -exec otool -L {} + 2> /dev/null || true)"
+          if grep -E '^[[:space:]]+(/opt/homebrew|/usr/local)/' <<< "$refs"; then
+            echo "The app still uses Homebrew's libraries"
+            exit 1
+          fi
+          cfg="$(mktemp -d)"
+          "$app/Contents/MacOS/nakama-matchmaker-server" --config "$cfg" programs | tee programs.txt
+          grep -Eq '^Server modules: +.*/Nakama Matchmaker\.app/Contents/Resources/server-modules$' programs.txt
+          "$app/Contents/MacOS/nakama-matchmaker" --config "$cfg" server programs | tee programs.txt
+          grep -Eq '^Server modules: +.*/Nakama Matchmaker\.app/Contents/Resources/server-modules$' programs.txt
+          # The window opens, and stays open
+          "$app/Contents/MacOS/nakama-matchmaker" --config "$cfg" > gui.log 2>&1 &
+          pid=$!
+          sleep 15
+          if ! kill -0 "$pid" 2> /dev/null; then
+            cat gui.log
+            echo "The launcher exited"
+            exit 1
+          fi
+          kill "$pid" || true
+          cat gui.log
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nightly-macos-arm64
+          path: nakama-matchmaker-macos-arm64.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish the nightly release
+    needs: [check, linux, windows, macos]
+    # A scheduled run is always on the default branch (its event carries no
+    # repository details); other runs publish only from the default branch.
+    if: >-
+      needs.check.outputs.build == 'true' &&
+      (github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: packages
+        run: |
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Move the nightly tag to this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/nightly -f sha="$GITHUB_SHA" > /dev/null
+          fi
+      - name: Recreate the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Deleting the release keeps the tag, which now points to this commit
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes
+          fi
+          cat > notes.md <<EOF
+          Nightly build of $GITHUB_REPOSITORY at commit [${GITHUB_SHA:0:12}]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA), $(date -u '+%Y-%m-%d %H:%M') UTC.
+
+          This is an automatic build of the default branch, not a stable release. Nakama and PostgreSQL are not included: [docs/hosting.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/hosting.md) says how to get them. SHA256SUMS.txt holds the SHA-256 checksum of each file.
+          EOF
+          gh release create nightly packages/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --prerelease --latest=false --title "Nightly build" --notes-file notes.md
+
+  # TEMPORARY: what the publish job would download, checked on a test branch
+  test-packages:
+    name: TEMPORARY list the packages
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: packages
+          merge-multiple: true
+      - name: List the packages
+        working-directory: packages
+        run: |
+          set -euo pipefail
+          ls -l
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          echo "== Linux server tarball"
+          tar -tzvf nakama-matchmaker-server-linux-x86_64.tar.gz | grep -Ev 'plugins/|lib/lib' || true
+          echo "== Linux AppImage"
+          chmod +x nakama-matchmaker-linux-x86_64.AppImage
+          (mkdir x && cd x && ../nakama-matchmaker-linux-x86_64.AppImage --appimage-extract > /dev/null && find squashfs-root | sort | grep -Ev 'usr/(lib|plugins)/')
+          echo "== Windows zip"
+          unzip -l nakama-matchmaker-windows-x86_64.zip
+          echo "== macOS zip"
+          unzip -l nakama-matchmaker-macos-arm64.zip | grep -Ev 'Frameworks/|PlugIns/'
