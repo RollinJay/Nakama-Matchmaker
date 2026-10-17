@@ -3,7 +3,8 @@
 # the rolling "nightly" pre-release.
 #
 #   - The schedule runs once a night and builds only when the default branch has
-#     moved since the commit that the "nightly" tag points to.
+#     moved since the commit that the "nightly" tag points to, or when the
+#     "nightly" release is missing.
 #   - A manual run (workflow_dispatch) always builds. Only a run on the default
 #     branch publishes; on another branch it only builds.
 #   - Each package carries the server modules where the programs look for them.
@@ -14,6 +15,8 @@ on:
   schedule:
     - cron: '33 3 * * *'
   workflow_dispatch:
+  push:
+    branches: [claude/nakama-matchmaker-dedicated-server-el209s]
 
 permissions:
   contents: read
@@ -33,6 +36,7 @@ jobs:
         id: check
         env:
           EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ "$EVENT" != schedule ]; then
@@ -46,12 +50,25 @@ jobs:
             $2 == "refs/tags/nightly^{}" { peeled = $1 }
             END { print (peeled != "" ? peeled : tag) }')"
           echo "nightly tag: ${tagged:-none}; this commit: $GITHUB_SHA"
-          if [ "$tagged" = "$GITHUB_SHA" ]; then
+          # A publish that failed after moving the tag leaves no release, or a draft
+          released="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/nightly" \
+            --jq '(.draft | not) and (.assets | length > 0)' 2> /dev/null || true)"
+          if [ "$tagged" = "$GITHUB_SHA" ] && [ "$released" = true ]; then
             echo "No new commits since the last nightly build."
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
+            [ "$tagged" = "$GITHUB_SHA" ] && echo "The nightly release is missing or has no files."
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: TEMPORARY test of the release check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for repo in "$GITHUB_REPOSITORY" RollinJay/IkemenGo-Nakama; do
+            released="$(gh api "repos/$repo/releases/tags/nightly" \
+              --jq '(.draft | not) and (.assets | length > 0)' 2> /dev/null || true)"
+            echo "$repo: released=$released"
+          done
 
   linux:
     name: Linux x86_64 (AppImage and server tarball)
@@ -309,7 +326,7 @@ jobs:
           # which it reaches through @rpath): point them to the copies in
           # Contents/Frameworks, and copy those it missed (a second pass fixes the copies)
           fw="$app/Contents/Frameworks"
-          for pass in 1 2; do
+          for _ in 1 2; do
             find "$app/Contents" -type f \( -perm +111 -o -name '*.dylib' \) -print0 |
             while IFS= read -r -d '' f; do
               # a library's own name
